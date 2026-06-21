@@ -387,6 +387,25 @@ checkpoint-based FT on steady-state overhead for non-trivial state" — the
 under the sandbox's namespace restrictions; the dump cost is the FT-relevant
 steady-state metric.)
 
+### Real linearizability check (paper exp #7) — 2026-06-21
+
+`./target/release/ob-lincheck` — a from-scratch **Wing-Gong linearizability
+checker** (`linearizability.rs`), validated on known histories (accepts
+linearizable, rejects stale-read + lost-update), then run on a **real concurrent
+OneBarrier history**: 4 clients, 36 ops on one register, recorded with real-time
+intervals.
+
+```
+  history size: 36
+  LINEARIZABLE: true
+  PASS — confirmed by a from-scratch Wing-Gong oracle (not an acked-set heuristic).
+```
+
+This upgrades `ob-jepsen`'s acked-set check to a genuine **linearizability
+verdict** — a verifier confirms the history, the standard bar for a strong FT
+paper. (KV linearizability decomposes per key by locality, so the register checker
+is the core.)
+
 ## Claims ledger (RQ → evidence)
 
 | RQ | Claim | Evidence | State |

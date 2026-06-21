@@ -81,3 +81,7 @@ path = "src/bin/ob_compare.rs"
 [[bin]]
 name = "ob-recovery"
 path = "src/bin/ob_recovery.rs"
+
+[[bin]]
+name = "ob-lincheck"
+path = "src/bin/ob_lincheck.rs"

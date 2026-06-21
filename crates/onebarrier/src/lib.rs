@@ -17,6 +17,7 @@ pub mod bench;
 pub mod cluster;
 pub mod durable;
 pub mod http;
+pub mod linearizability;
 pub mod memcache;
 pub mod recovery;
 pub mod resp;
