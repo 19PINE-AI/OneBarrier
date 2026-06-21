@@ -1,51 +1,108 @@
-# obpreload — transparent interception (Track B)
+# OneBarrier libOS — transparent interception & deterministic recovery
 
-OneBarrier's libOS-style interception point, in user space, with **no kernel and
-no application changes** — the SocksDirect lineage. `obpreload.c` is an
-`LD_PRELOAD` shim that interposes libc socket I/O (`accept`/`accept4`,
-`read`/`recv`, `close`) on an **unmodified binary** and tees the inbound request
-bytes of every accepted connection into a OneBarrier capture log. `ob-replay`
-groups the captured stream by connection and replays it against a fresh instance,
-rebuilding state after a crash.
+The user-space libOS layer that brings OneBarrier's fault tolerance to
+**unmodified** applications: it intercepts an app's nondeterminism, records it,
+and replays it deterministically on a fresh instance after a crash — *recovery*,
+not just interception. No kernel changes, no application changes (the
+SocksDirect lineage).
 
-## Demo: transparent FT for unmodified `redis-server`
+## What it does
 
-```bash
-cargo build --release -p onebarrier --bin ob-replay
-bash interpose/demo.sh
+`obpreload.c` (an `LD_PRELOAD` shim, `gcc -shared -fPIC -O2 -o libobpreload.so
+obpreload.c -ldl -lpthread`) interposes the libc surface that carries
+nondeterminism:
+
+| Intercepted | Purpose |
+|---|---|
+| `accept`/`accept4`, `read`/`recv`, `close` | capture the request stream (the input) — `OB_CAPTURE` |
+| `gettimeofday`, `clock_gettime`, `time`, `getrandom` | virtualize local nondeterminism |
+
+Two virtualization strategies are provided, selected by environment variable:
+
+1. **Record/replay** (`OB_RECORD` / `OB_REPLAY`) — log every nondeterministic
+   *result* on the live run; return them in order on replay. Exact for
+   **request-driven** time reads.
+2. **Virtual clock** (`OB_VCLOCK`) — time = `base + ticks`, where `ticks` advance
+   by a fixed delta on each socket read (a deterministic input event). Every time
+   read is then **count-independent**, so **timer-driven** reads (redis
+   `serverCron`, nginx `ngx_time_update`) no longer desync replay. This is the
+   general mechanism.
+
+## Why two strategies — the boundary we measured
+
+Record/replay alone replays time reads by *sequence position*. That is exact when
+the app reads time once per request (Node's `Date.now()` aligned **8/8** across a
+crash + 4 s gap). But **timer-driven** servers (redis `serverCron`) read time on
+an internal timer whose firing count differs between record and replay, so the
+sequential cursor desyncs — measured: redis `TIME` returned the recorded value
+only sporadically.
+
+**The virtual clock closes that boundary.** Because virtual time depends only on
+the (deterministic) input-event count, not on how many times it is read, redis
+`TIME` becomes **byte-identical across recovery**:
+
+```
+LIVE:   1782053569.269446 .270446 .271446 .272446 .273446 .274446
+REPLAY: 1782053569.269446 .270446 .271446 .272446 .273446 .274446   (3 s real gap)
 ```
 
-Output (reproduced 2026-06-21) — redis-server has **zero knowledge** of OneBarrier:
+The replay's seconds **ignore the real-time gap** (it returns the live `base`, not
+current time) and the microseconds advance deterministically. The virtual clock
+is **app-agnostic** — it intercepts the libc time symbols for any binary (a
+controlled test counted exactly 2,000,000 `gettimeofday` + 2,000,000
+`clock_gettime`; the vDSO is *not* a blocker, since `LD_PRELOAD` overrides the
+exported symbols).
 
-```
-before crash: DBSIZE=7 name=OneBarrier hits=2
-intercepted:  413 bytes captured transparently
-== CRASH (kill -9) ==
-fresh:        DBSIZE=0 name=        <- state lost
-== replay the intercepted request stream ==
-after replay: DBSIZE=7 name=OneBarrier hits=2
-keys: hits key1 key2 key3 key4 key5 name
-```
+## The unified recovery harness
 
-## What this is, and isn't (honest scope)
-
-- **Is:** genuine transparent interception — the unmodified server is recorded and
-  recovered without a single line of change, demonstrating the core of the
-  transparent vision. Works for deterministic request/response state (KV ops).
-- **Isn't (yet):** it captures the network input stream but not *all*
-  non-determinism — `gettimeofday`/`rand`/thread scheduling are not yet
-  virtualized, and replay is single-stream per connection, so a multi-threaded
-  app with internal races or time/RNG-dependent state would not replay bit-identically.
-  Closing that gap (intercepting the time/RNG syscalls, integrating with the
-  fabric so replay rides the total order) is the libOS's remaining work — see
-  `docs/PLAN.md` §4–5. The native servers (`ob-kv`, `ob-mc`) already get the full
-  in-engine treatment (durable log + snapshot + exactly-once); this shim brings
-  the *unmodified*-binary case as close to that vision as user-space interposition
-  allows.
-
-## Build
+`ob-recover.sh <redis|memcached|nginx|node> [gap_s]` runs the full cycle for an
+unmodified app: **record under the virtual clock → crash → wait a real-time gap →
+replay on a fresh instance → verify byte-identical time-dependent output**. Per-app
+time-dependent probes: redis `TIME`, memcached `stats` `time`, nginx `Date`
+header, Node `Date.now()`.
 
 ```bash
 gcc -shared -fPIC -O2 -o interpose/libobpreload.so interpose/obpreload.c -ldl -lpthread
-OB_CAPTURE=/tmp/cap.log LD_PRELOAD=$PWD/interpose/libobpreload.so <server> ...
+cargo build --release -p onebarrier --bin ob-replay
+bash interpose/ob-recover.sh redis 3       # → "redis DETERMINISTIC"
+bash interpose/recover-node.sh             # Node Date.now() determinism
+bash interpose/demo.sh                      # stock-redis record-replay STATE recovery
 ```
+
+## Per-app status
+
+All five verified by `ob-recover.sh` (record → crash → real-time gap → replay →
+`diff`), byte-identical across the gap:
+
+| App | configuration | time-dependent probe | determinism |
+|---|---|---|---|
+| **engine apps** (`ob-kv`/`ob-mc`/…) | native | counter clock | deterministic by design ✅ |
+| **redis** | single-threaded | `TIME` | virtual clock → **byte-identical** ✅ |
+| **node** | event loop | `Date.now()` | virtual clock → **byte-identical** ✅ |
+| **memcached** | `-t 1` (single worker) | `stats time` | virtual clock → **byte-identical** ✅ |
+| **nginx** | `worker_processes 1` | `Date:` header | virtual clock → **byte-identical** ✅ |
+
+(nginx is the strongest demonstration: the HTTP `Date:` header — formatted deep in
+nginx's own code from its cached time — is frozen identically across a real-time
+gap, e.g. `Date: Sun, 21 Jun 2026 15:11:46 GMT` on both the live and replayed
+instance.)
+
+State recovery (request-replay of SET/GET) is **time-independent** and works for
+all KV apps regardless of the clock (the `demo.sh` stock-redis demonstration).
+
+## Honest scope (the libOS's remaining work)
+
+- **RNG**: `getrandom` via libc is virtualized; V8's `Math.random` seed comes via
+  the raw `getrandom` syscall / a `/dev/urandom` read whose startup sequence is
+  not byte-reproducible (the read-replay attempt destabilized node startup).
+  Closing it needs **seccomp-BPF user-notification** to trap the syscall — the
+  documented next piece (`docs/PAPER-PLAN.md` §2).
+- **Multithreading**: memcached (default threads) and nginx (multi-worker) need
+  single-worker config *or* a deterministic-scheduling layer (CoreDet/Crane). The
+  share-nothing single-worker case is the supported scope; arbitrary
+  multithreaded determinism is the frontier.
+- **Process-state capture**: recovery currently replays from process start;
+  checkpoint-based recovery (CRIU/libOS snapshot + tail replay) is future work
+  (CRIU dump measured; restore was sandbox-blocked).
+
+None of this requires RDMA — the libOS is effort-gated, commodity-hardware work.

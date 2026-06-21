@@ -15,6 +15,7 @@ as the autonomous research proceeds.
 | M4 | In-harness baselines: real-Redis (RQ1), active-SMR (RQ5), central-sequencer (RQ7), **+ LLFT (host sequencer) & HyCoR (nondeterminism-log) head-to-head** | **done** ✅ |
 | M5 | Correctness-under-fault + sweeps: crash-injection (RQ3/RQ4), scale (RQ6), CPU (RQ5), interval (RQ8), **+ `ob-jepsen` concurrent-fault checker (real `kill -9`)** | **done** ✅ |
 | TB | Track B — transparent interception: `LD_PRELOAD` shim records an **unmodified** binary; `ob-replay` rebuilds state. Demoed on stock `redis-server` | **done** ✅ (scoped) |
+| TB+ | Track B+ — **virtual clock**: deterministic recovery of **5 unmodified apps** (redis, memcached, nginx, node + engine apps), time-dependent output **byte-identical across a real-time gap** via `ob-recover.sh` | **5/5 done** ✅ |
 
 ## Reproducible results
 
@@ -128,6 +129,38 @@ network input stream but not yet time/RNG/scheduling non-determinism — see
 `interpose/README.md`. Native servers (`ob-kv`, `ob-mc`) get the full in-engine
 treatment; this brings the *unmodified*-binary case as close as user-space
 interposition allows.
+
+### Track B+ — virtual clock: deterministic recovery of FIVE unmodified apps (2026-06-21)
+
+The `obpreload` shim's **virtual clock** (`OB_VCLOCK`) closes the time-driven
+nondeterminism gap that record/replay-by-position left open (see
+`interpose/README.md`). Virtual time = `base + ticks`, ticks advancing a fixed
+1 ms per socket read (a deterministic input event), so every time read is
+count-independent — timer-driven reads (redis `serverCron`, nginx
+`ngx_time_update`, memcached `current_time`) no longer desync on replay.
+
+Verified end-to-end by `bash interpose/ob-recover.sh <app> 3`
+(record under the virtual clock → `kill -9` → **3 s real wall-clock gap** →
+replay on a fresh instance with the same persisted `base` → `diff`). All
+**byte-identical across the gap** (run 2026-06-21, current epoch ~1782054700):
+
+| app | config | time-dependent probe | live = replay across 3 s real gap |
+|---|---|---|---|
+| **redis** | single-thread | `TIME` | `1782054695.503554…` ✅ |
+| **memcached** | `-t 1` | `stats time` | `1782054701` ✅ |
+| **nginx** | `worker_processes 1` | `Date:` header | `Sun, 21 Jun 2026 15:11:46 GMT` ✅ |
+| **node** | event loop | `Date.now()` | `1782054711413…` ✅ |
+| engine apps | native | counter clock | deterministic by design ✅ |
+
+nginx is the sharpest result: the HTTP `Date:` header — formatted from nginx's own
+cached time deep inside its code — is frozen *identically* on the live and replayed
+instances despite the real clock advancing 3 s. This is **deterministic recovery of
+unmodified production servers**, not interception: the recovered process re-derives
+the same observable time-dependent output it had before the crash. App-agnostic —
+the shim catches the libc time surface of any binary (a control counted exactly
+2 M `gettimeofday` + 2 M `clock_gettime`; the vDSO is not a blocker because
+`LD_PRELOAD` overrides the exported symbols). Honest residual scope (RNG via raw
+`getrandom`, arbitrary multithreaded scheduling) documented in `interpose/README.md`.
 
 ### RQ8 — snapshot-interval tradeoff (2026-06-21)
 
