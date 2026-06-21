@@ -11,3 +11,4 @@ Cargo.lock.bak
 *.so
 spec/states/
 spec/*_TTrace_*
+interpose/*.so

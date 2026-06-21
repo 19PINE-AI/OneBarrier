@@ -17,6 +17,14 @@ nondeterminism:
 | `accept`/`accept4`, `read`/`recv`, `close` | capture the request stream (the input) — `OB_CAPTURE` |
 | `gettimeofday`, `clock_gettime`, `time`, `getrandom` | virtualize local nondeterminism |
 
+The libOS is three composable `LD_PRELOAD` libraries (each independently useful):
+
+| library | source | closes |
+|---|---|---|
+| `libobpreload.so` | `obpreload.c` | socket capture + **time** (virtual clock / record-replay) |
+| `librngdet.so` | `rngdet.c` | **RNG** — raw `getrandom` syscall via seccomp-BPF |
+| `libdetsched.so` | `detsched.c` | **thread scheduling** — deterministic logical clocks |
+
 Two virtualization strategies are provided, selected by environment variable:
 
 1. **Record/replay** (`OB_RECORD` / `OB_REPLAY`) — log every nondeterministic
@@ -106,19 +114,67 @@ instance.)
 State recovery (request-replay of SET/GET) is **time-independent** and works for
 all KV apps regardless of the clock (the `demo.sh` stock-redis demonstration).
 
-## Honest scope (the libOS's remaining work)
+## Closing the residual nondeterminism: RNG and threads
 
-- **RNG**: `getrandom` via libc is virtualized; V8's `Math.random` seed comes via
-  the raw `getrandom` syscall / a `/dev/urandom` read whose startup sequence is
-  not byte-reproducible (the read-replay attempt destabilized node startup).
-  Closing it needs **seccomp-BPF user-notification** to trap the syscall — the
-  documented next piece (`docs/PAPER-PLAN.md` §2).
-- **Multithreading**: memcached (default threads) and nginx (multi-worker) need
-  single-worker config *or* a deterministic-scheduling layer (CoreDet/Crane). The
-  share-nothing single-worker case is the supported scope; arbitrary
-  multithreaded determinism is the frontier.
+The virtual clock handles time; two more libOS components close the rest.
+
+### `rngdet.c` — deterministic RNG at the raw-syscall level (`librngdet.so`)
+
+V8/Node, OpenSSL, and `arc4random` seed their PRNGs from the **raw** `getrandom(2)`
+syscall, which bypasses `LD_PRELOAD` symbol interposition. `rngdet.c` installs a
+**seccomp-BPF user-notification** filter that traps `getrandom`; a supervisor
+thread fills the caller's buffer from a deterministic splitmix64 stream seeded from
+a persisted seed (`OB_VRAND=<file>`), so live and replay observe the identical
+random stream. Verified: a raw-`getrandom` C program returns identical bytes across
+runs (`520956f1…`), where real entropy differs every run.
+
+For V8, two more entropy sources must be pinned: **ASLR addresses** (`setarch -R`,
+disable address-space randomization) and the **RDRAND CPU instruction**, which no
+syscall trap can catch (`OPENSSL_ia32cap='~0x4000000000000000:~0x0'` makes OpenSSL
+fall back to the trapped `getrandom`). With the full stack —
+virtual clock + `librngdet.so` + ASLR-off + no-RDRAND — Node's `Math.random()` is
+**byte-identical across recovery**:
+
+```
+live   {"now":1782055180436,"rnd":0.27798545181677814}
+replay {"now":1782055180436,"rnd":0.27798545181677814}   (4 s real gap)
+control{"now":1782055185175,"rnd":0.25929447455726007}   (no stack — both differ)
+```
+
+`ob-recover.sh` applies this stack to every app automatically.
+
+### `detsched.c` — deterministic multithreading (`libdetsched.so`)
+
+With >1 thread the OS chooses the order threads enter critical sections, so state
+evolves nondeterministically. `detsched.c` interposes the pthread sync surface and
+imposes **Kendo-style deterministic logical clocks** (Olszewski et al., ASPLOS'09):
+a thread may take a **top-level** lock only when its `(logical-clock, slot)` is the
+global minimum among active threads, then advances its clock. The order is a
+function of the clocks, not OS timing, so the interleaving is identical every run.
+Demonstrated by `det-mt.sh`:
+
+- a 4-thread microbenchmark's critical-section order is **identical across runs**
+  (`order_hash=eef52ab…`, 0 turn-relaxations) where it otherwise varies every run;
+- a condvar producer/consumer runs with **no deadlock** (parked threads leave the
+  minimum; nested locks bypass the gate — both required to stay deadlock-free);
+- it **composes with a real multithreaded server**: `memcached -t 4` serves and
+  stores under the scheduler.
+
+Engineering notes that made it work on real binaries: gate only depth-0
+acquisitions (nested locking deadlocked the naïve scheme); a bounded turn-wait
+(`OB_DETSCHED_SPIN`, default 50000) keeps strict determinism for normal contention
+but degrades to best-effort rather than hang on lock-heavy server init; and
+`pthread_cond_wait` must be bound to its **`GLIBC_2.3.2`** version via `dlvsym`
+(plain `dlsym` returns the old compat shim and hangs threaded servers).
+
+Scope (Kendo's domain): race-free programs whose threads make progress through sync
+operations. Pure-compute threads that never sync are out of scope (Kendo uses HW
+perf counters there).
+
+## Remaining work
+
 - **Process-state capture**: recovery currently replays from process start;
-  checkpoint-based recovery (CRIU/libOS snapshot + tail replay) is future work
+  checkpoint-based recovery (CRIU/libOS snapshot + tail replay) shortens replay
   (CRIU dump measured; restore was sandbox-blocked).
 
-None of this requires RDMA — the libOS is effort-gated, commodity-hardware work.
+None of the above requires RDMA — the libOS is effort-gated, commodity-hardware work.

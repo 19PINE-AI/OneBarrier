@@ -25,9 +25,15 @@ if [ "$APP" = all ]; then
   done
   exit $rc
 fi
-VB="/tmp/ob-vbase-$APP"; L="/tmp/ob-$APP-live.txt"; R="/tmp/ob-$APP-replay.txt"; C="/tmp/ob-$APP-control.txt"
-PRE="OB_VCLOCK=$VB LD_PRELOAD=$SO"   # virtualized: deterministic time
-CTL="LD_PRELOAD=$SO"                  # control: real wall-clock time
+VB="/tmp/ob-vbase-$APP"; VR="/tmp/ob-vrand-$APP"
+L="/tmp/ob-$APP-live.txt"; R="/tmp/ob-$APP-replay.txt"; C="/tmp/ob-$APP-control.txt"
+RNG="$HERE/librngdet.so"
+IA='~0x4000000000000000:~0x0'         # disable RDRAND/RDSEED for OpenSSL (CPU instr, untrappable)
+# Full determinism stack: virtual clock (time) + seccomp getrandom trap (raw RNG)
+# + ASLR-off (setarch -R) + no-RDRAND. The recovered process re-derives identical
+# time- AND randomness-dependent output.
+PRE="OPENSSL_ia32cap='$IA' OB_VCLOCK='$VB' OB_VRAND='$VR' LD_PRELOAD='$RNG $SO' setarch -R"
+CTL="LD_PRELOAD='$SO'"                 # control: real time + real randomness
 
 case "$APP" in
   redis)
@@ -62,7 +68,7 @@ NG
     P1=8140; P2=8141; P3=8142
     cat > /tmp/ob-node-srv.js <<'JS'
 const http=require('http');const p=+process.argv[2];
-http.createServer((q,s)=>s.end(JSON.stringify({now:Date.now()})+'\n')).listen(p,'127.0.0.1');
+http.createServer((q,s)=>s.end(JSON.stringify({now:Date.now(),rnd:Math.random()})+'\n')).listen(p,'127.0.0.1');
 JS
     bcmd(){ echo "'$NODE' /tmp/ob-node-srv.js $1"; }
     lcmd(){ echo "$PRE $(bcmd "$1")"; }
@@ -73,7 +79,8 @@ JS
 esac
 
 kill_port(){ for pid in $(ss -tlnp 2>/dev/null | grep ":$1 " | grep -oP 'pid=\K[0-9]+'); do kill -9 "$pid" 2>/dev/null; done; }
-kill_port "$P1"; kill_port "$P2"; kill_port "$P3"; sleep 1; rm -f "$VB" "$L" "$R" "$C"
+[ -f "$RNG" ] || gcc -shared -fPIC -O2 -o "$RNG" "$HERE/rngdet.c" -lpthread 2>/dev/null
+kill_port "$P1"; kill_port "$P2"; kill_port "$P3"; sleep 1; rm -f "$VB" "$VR" "$L" "$R" "$C"
 
 # 1) LIVE — record under the virtual clock
 eval "$(lcmd "$P1") >/dev/null 2>&1 &"

@@ -16,6 +16,7 @@ as the autonomous research proceeds.
 | M5 | Correctness-under-fault + sweeps: crash-injection (RQ3/RQ4), scale (RQ6), CPU (RQ5), interval (RQ8), **+ `ob-jepsen` concurrent-fault checker (real `kill -9`)** | **done** ✅ |
 | TB | Track B — transparent interception: `LD_PRELOAD` shim records an **unmodified** binary; `ob-replay` rebuilds state. Demoed on stock `redis-server` | **done** ✅ (scoped) |
 | TB+ | Track B+ — **virtual clock**: deterministic recovery of **5 unmodified apps** (redis, memcached, nginx, node + engine apps), time-dependent output **byte-identical across a real-time gap** via `ob-recover.sh` | **5/5 done** ✅ |
+| TB++ | Track B++ — **residual nondeterminism closed**: raw-`getrandom` seccomp determinizer (`librngdet.so`) → Node `Math.random()` byte-identical; Kendo-style deterministic scheduler (`libdetsched.so`) → multithreaded order determinism + `memcached -t 4` composes | **done** ✅ |
 
 ## Reproducible results
 
@@ -163,6 +164,45 @@ the shim catches the libc time surface of any binary (a control counted exactly
 2 M `gettimeofday` + 2 M `clock_gettime`; the vDSO is not a blocker because
 `LD_PRELOAD` overrides the exported symbols). Honest residual scope (RNG via raw
 `getrandom`, arbitrary multithreaded scheduling) documented in `interpose/README.md`.
+
+### Track B++ — RNG and thread-scheduling determinism (2026-06-21)
+
+The two residual nondeterminism sources beyond time, closed comprehensively (no
+deferral) — both RDMA-independent.
+
+**RNG — `librngdet.so` (`interpose/rngdet.c`).** V8/OpenSSL seed PRNGs from the
+*raw* `getrandom(2)` syscall, invisible to symbol interposition. A **seccomp-BPF
+user-notification** filter traps `getrandom`; a supervisor thread fills the buffer
+from a persisted-seed splitmix64 stream. Verified: a raw-`getrandom` C program
+returns identical bytes across runs (`520956f1…`) vs differing real entropy. For
+V8's `Math.random`, two more sources are pinned — **ASLR** (`setarch -R`) and the
+**RDRAND** CPU instruction (`OPENSSL_ia32cap=~0x40…`). With the full stack, Node's
+`Date.now()` **and** `Math.random()` are byte-identical across a 4 s crash gap:
+
+```
+live   {"now":1782055180436,"rnd":0.27798545181677814}
+replay {"now":1782055180436,"rnd":0.27798545181677814}
+control{"now":1782055185175,"rnd":0.25929447455726007}   (no stack ⇒ both differ)
+```
+Now part of `ob-recover.sh` for every app.
+
+**Threads — `libdetsched.so` (`interpose/detsched.c`).** Kendo-style deterministic
+logical clocks gate top-level lock acquisition (a thread acquires only when its
+`(clock, slot)` is the global minimum), making the critical-section interleaving a
+function of the clocks, not OS timing. Verified by `interpose/det-mt.sh`:
+
+| test | without DMT | with DMT |
+|---|---|---|
+| 4-thread mutex order (`order_hash`) | varies every run (`9f75…`, `6976…`, `883b…`) | **identical** (`eef52ab…`), 0 relaxations |
+| condvar producer/consumer | — | **no deadlock** ✅ |
+| `memcached -t 4` (4 worker threads) | — | **serves + stores under DMT** ✅ |
+
+Hard-won correctness details: gate only depth-0 acquisitions (nested locking
+deadlocked the naïve min-clock scheme); bounded turn-wait (`OB_DETSCHED_SPIN`,
+default 50000) trades strict determinism for liveness on lock-heavy init; and
+`pthread_cond_wait` must be `dlvsym`-bound to `GLIBC_2.3.2` (plain `dlsym` returns
+the old compat shim and hangs threaded servers). Scope = race-free programs that
+progress through sync ops (Kendo's domain).
 
 ### RQ8 — snapshot-interval tradeoff (2026-06-21)
 
