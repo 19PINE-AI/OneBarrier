@@ -37,3 +37,7 @@ path = "src/bin/ob_replay.rs"
 [[bin]]
 name = "ob-sweep"
 path = "src/bin/ob_sweep.rs"
+
+[[bin]]
+name = "ob-scale"
+path = "src/bin/ob_scale.rs"
