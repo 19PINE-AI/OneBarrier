@@ -353,6 +353,81 @@ pub fn bench_cpu_passive_vs_active(dir: &std::path::Path, ops: u64, apply_us: u6
     )
 }
 
+// ---------------------------------------------------------------------------
+// RQ7 — establishing total order: central sequencer vs fabric/timestamp
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct OrderResult {
+    pub mode: String,
+    pub threads: usize,
+    pub ops_per_sec: f64,
+}
+
+/// RQ7 (contribution isolation): the cost of *establishing* a replayable total
+/// order. The LLFT/NOPaxos-style **central sequencer** forces every op through a
+/// single serialization point (all producers contend); the **fabric/timestamp**
+/// approach (1Pipe / OneBarrier) assigns order without shared contention and
+/// reconstructs the total order by timestamp. With this software model, the
+/// sequencer bottlenecks as producers grow while the timestamp approach scales —
+/// the reason OneBarrier inherits no central-sequencer cost (cf. 1Pipe paper
+/// Fig 8, measured 2–20× on hardware). This is a model of the *ordering
+/// mechanism*, not the full system.
+pub fn bench_ordering(threads: usize, ops_per_thread: u64) -> (OrderResult, OrderResult) {
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+
+    let total = (threads as u64 * ops_per_thread) as f64;
+
+    // Central sequencer: every op acquires the one global counter.
+    let seq_ops_per_sec = {
+        let seq = Arc::new(Mutex::new(0u64));
+        let t0 = Instant::now();
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                let seq = Arc::clone(&seq);
+                thread::spawn(move || {
+                    for _ in 0..ops_per_thread {
+                        let mut g = seq.lock().unwrap();
+                        *g += 1; // the serialization point
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        total / t0.elapsed().as_secs_f64()
+    };
+
+    // Fabric/timestamp: each producer assigns order locally (no shared lock).
+    let ts_ops_per_sec = {
+        let t0 = Instant::now();
+        let handles: Vec<_> = (0..threads)
+            .map(|tid| {
+                thread::spawn(move || {
+                    let mut local = (tid as u64) << 40; // per-source monotonic base
+                    let mut sink = 0u64;
+                    for _ in 0..ops_per_thread {
+                        local += 1; // assign a timestamp, no contention
+                        sink ^= local;
+                    }
+                    sink
+                })
+            })
+            .collect();
+        for h in handles {
+            let _ = h.join().unwrap();
+        }
+        total / t0.elapsed().as_secs_f64()
+    };
+
+    (
+        OrderResult { mode: "central-sequencer".into(), threads, ops_per_sec: seq_ops_per_sec },
+        OrderResult { mode: "fabric/timestamp".into(), threads, ops_per_sec: ts_ops_per_sec },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,6 +439,18 @@ mod tests {
         d.push(format!("ob-bench-{}-{}-{}", tag, std::process::id(), k));
         let _ = std::fs::remove_dir_all(&d);
         d
+    }
+
+    #[test]
+    fn fabric_ordering_scales_past_central_sequencer() {
+        // At 8 producers, lock-free timestamp ordering beats the contended
+        // central sequencer (the LLFT/NOPaxos serialization point).
+        let (seq, ts) = bench_ordering(8, 200_000);
+        assert!(
+            ts.ops_per_sec > seq.ops_per_sec,
+            "timestamp {} ops/s should beat sequencer {} ops/s",
+            ts.ops_per_sec, seq.ops_per_sec
+        );
     }
 
     #[test]

@@ -49,3 +49,7 @@ path = "src/bin/ob_http.rs"
 [[bin]]
 name = "ob-cpu"
 path = "src/bin/ob_cpu.rs"
+
+[[bin]]
+name = "ob-order"
+path = "src/bin/ob_order.rs"

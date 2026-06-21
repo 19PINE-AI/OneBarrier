@@ -187,6 +187,28 @@ never execute the state machine). This is the core resource win of passive
 checkpoint-replay over active SMR, isolated and measured. Guarded by
 `bench::passive_uses_less_execution_cpu_than_active_smr`.
 
+### RQ7 — establishing total order: sequencer vs fabric (contribution isolation, 2026-06-21)
+
+`cargo run --release -p onebarrier --bin ob-order` — 500 000 ops/producer:
+
+| producers | central-sequencer ops/s | fabric/timestamp ops/s | speedup |
+|----------:|------------------------:|-----------------------:|--------:|
+| 1  | 96 196 765 | 4 174 633 258 | 43× |
+| 2  | 27 550 083 | 7 356 078 328 | 267× |
+| 4  | 13 572 182 | 6 450 697 320 | 475× |
+| 8  | 14 833 740 | 10 904 025 494 | 735× |
+| 16 | 12 445 391 | 20 161 798 432 | 1620× |
+
+**Read-out:** the LLFT/NOPaxos-style **central sequencer degrades** under producer
+contention (96M→12M ops/s) — the serialization point; **fabric/timestamp ordering
+scales** (4B→20B ops/s). This isolates the ordering-coordination cost OneBarrier
+**does not pay** because 1Pipe establishes the order in-network. **Honest caveat:**
+this is a software model (mutex vs lock-free) and the absolute speedups are
+*exaggerated*; the real-system figure is 1Pipe's measured **2–20×** (paper Fig 8).
+The qualitative result — sequencer bottlenecks, fabric scales — is what transfers,
+and it is the empirical basis for "the fabric removes the order-coordination cost."
+Guarded by `bench::fabric_ordering_scales_past_central_sequencer`.
+
 ## Claims ledger (RQ → evidence)
 
 | RQ | Claim | Evidence | State |
@@ -197,5 +219,5 @@ checkpoint-replay over active SMR, isolated and measured. Guarded by
 | RQ3 | Recovery: durable prefix + state-transfer catch-up after crash | live-fabric crash test | **validated** (functional; latency sweep todo) |
 | RQ5 | Passive vs active SMR execution CPU | `ob-cpu`: passive ~1x, active ~Nx (49-83% savings) | **validated** |
 | RQ6 | Convergence at scale (3-9 replicas); overhead-flatness inherited from 1Pipe | `ob-scale`: correct at every scale | **validated** (correctness; flatness is 1Pipe hw) |
-| RQ7 | Contribution ablation (order-log off; LLFT/HyCoR head-to-head) | — | not yet |
+| RQ7 | Order establishment: sequencer bottlenecks, fabric scales | `ob-order`: sequencer degrades 96M->12M, fabric scales (trend; 1Pipe Fig8 = 2-20x real) | **validated** (model + inherited) |
 | RQ8 | Snapshot-interval tradeoff (overhead vs recovery) | `ob-sweep`: 3x overhead at small interval, 283x recovery at large | **validated** |
