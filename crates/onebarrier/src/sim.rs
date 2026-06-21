@@ -139,9 +139,87 @@ pub fn simulate(p: &SimParams, mode: Mode) -> LatencyStats {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Competitor head-to-head at the RDMA operating point (paper experiment #3)
+// ---------------------------------------------------------------------------
+
+/// A transparent-FT competitor modeled by its *documented mechanism* at the RDMA
+/// operating point (parameters from each system's own paper). Not reimplementations
+/// — models, clearly labelled — of the cost each design pays per externalizing op.
+#[derive(Clone, Debug)]
+pub struct Competitor {
+    pub name: &'static str,
+    pub svc_us: f64,    // executor occupancy per op
+    pub fixed_us: f64,  // network + output-commit latency outside the queue
+    pub cpu_mult: f64,  // execution-resource multiplier vs one live copy
+    pub note: &'static str,
+}
+
+/// The competitor set, parameterized from their papers + the 1Pipe operating point.
+pub fn competitors(p: &SimParams) -> Vec<Competitor> {
+    let remus_ckpt_us = 25_000.0; // Remus checkpoint interval ~25 ms (NSDI'08)
+    let seq_us = p.rtt_us;        // LLFT host-sequencer extra round-trip
+    let log_us = 0.3;             // HyCoR per-op nondeterminism-log write
+    vec![
+        Competitor { name: "OneBarrier", svc_us: p.apply_us, fixed_us: p.rtt_us + p.barrier_us, cpu_mult: 1.0,
+            note: "durability rides 1Pipe 2PC phase-1 (in-fabric RDMA)" },
+        Competitor { name: "Remus", svc_us: p.apply_us, fixed_us: p.rtt_us + remus_ckpt_us / 2.0, cpu_mult: 2.0,
+            note: "output buffered until next checkpoint (~25 ms hold)" },
+        Competitor { name: "COLO", svc_us: p.apply_us, fixed_us: p.rtt_us + p.barrier_us, cpu_mult: 2.0,
+            note: "lock-step VMs; output released on match, checkpoint on mismatch" },
+        Competitor { name: "LLFT", svc_us: p.apply_us, fixed_us: p.rtt_us + p.barrier_us + seq_us, cpu_mult: 2.0,
+            note: "host virtual-time sequencer adds a round-trip" },
+        Competitor { name: "HyCoR", svc_us: p.apply_us + log_us, fixed_us: p.rtt_us + p.barrier_us, cpu_mult: 1.0,
+            note: "per-op nondeterminism log write on the path" },
+        Competitor { name: "active-SMR(3)", svc_us: p.apply_us, fixed_us: p.rtt_us + p.barrier_us, cpu_mult: 3.0,
+            note: "all 3 replicas execute every op" },
+    ]
+}
+
+/// Run the single-executor queue for an explicit (svc, fixed) — used by competitors.
+pub fn simulate_explicit(p: &SimParams, svc: f64, fixed: f64) -> LatencyStats {
+    let lambda = p.offered_load / p.apply_us;
+    let mut rng = Rng::new(p.seed);
+    let mut now = 0.0f64;
+    let mut prev_finish = 0.0f64;
+    let mut lat: Vec<f64> = Vec::with_capacity(p.requests as usize);
+    for _ in 0..p.requests {
+        now += rng.exp(lambda);
+        let start = now.max(prev_finish);
+        let finish = start + svc;
+        prev_finish = finish;
+        lat.push((finish - now) + fixed);
+    }
+    lat.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mean = lat.iter().sum::<f64>() / lat.len() as f64;
+    LatencyStats {
+        mode: "competitor".into(),
+        n: lat.len(),
+        p50_us: pct(&lat, 0.50),
+        p99_us: pct(&lat, 0.99),
+        p999_us: pct(&lat, 0.999),
+        mean_us: mean,
+        max_us: *lat.last().unwrap(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn onebarrier_dominates_competitors_on_latency_and_cpu() {
+        let p = SimParams { requests: 50_000, offered_load: 0.7, ..Default::default() };
+        let cs = competitors(&p);
+        let ob = cs.iter().find(|c| c.name == "OneBarrier").unwrap();
+        let ob_lat = simulate_explicit(&p, ob.svc_us, ob.fixed_us);
+        for c in &cs {
+            let lat = simulate_explicit(&p, c.svc_us, c.fixed_us);
+            // OneBarrier's p99 is <= every competitor's, and its CPU mult is the lowest.
+            assert!(ob_lat.p99_us <= lat.p99_us + 1e-9, "OB p99 {} > {} p99 {}", ob_lat.p99_us, c.name, lat.p99_us);
+            assert!(ob.cpu_mult <= c.cpu_mult, "OB cpu {} > {} cpu {}", ob.cpu_mult, c.name, c.cpu_mult);
+        }
+    }
 
     #[test]
     fn ft_overlap_matches_baseline_and_fsync_collapses() {

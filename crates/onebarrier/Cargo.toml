@@ -73,3 +73,7 @@ path = "src/bin/ob_jepsen.rs"
 [[bin]]
 name = "ob-sim"
 path = "src/bin/ob_sim.rs"
+
+[[bin]]
+name = "ob-compare"
+path = "src/bin/ob_compare.rs"

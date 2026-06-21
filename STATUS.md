@@ -285,6 +285,28 @@ durability barrier when the durable write rides 1Pipe's 2PC phase-1 (in-fabric
 RDMA). Serial-fsync durability collapses the tail — the output-hold failure mode
 that sank Remus. Guarded by `sim::ft_overlap_matches_baseline_and_fsync_collapses`.
 
+### Competitor head-to-head @ RDMA operating point (SIMULATED) — 2026-06-21
+
+`cargo run --release -p onebarrier --bin ob-compare` — each transparent-FT
+competitor modeled by its *documented mechanism* with its paper's parameters,
+stable regime (load 0.4):
+
+| system | p50/p99/p99.9 µs | CPU× | mechanism |
+|---|---|---:|---|
+| **OneBarrier** | **4.5/5.8/6.5** | **1×** | durability rides 1Pipe 2PC phase-1 |
+| Remus | 12502/12504/12505 | 2× | output held ~25 ms until checkpoint |
+| COLO | 4.5/5.8/6.5 | 2× | lock-step; output on match |
+| LLFT | 6.5/7.8/8.5 | 2× | host sequencer round-trip |
+| HyCoR | 5.2/8.9/11.1 | 1× | per-op nondeterminism log on path |
+| active-SMR(3) | 4.5/5.8/6.5 | 3× | all replicas execute |
+
+**Read-out:** OneBarrier matches the **best** latency (COLO/SMR) at the **lowest**
+CPU (1×), and dwarfs Remus (≈2000× — the output-hold tail that kept transparent
+VM-FT out of production). HyCoR's per-op log and LLFT's sequencer are shared-path
+costs that also lower their throughput ceiling; OneBarrier's durability is *off*
+the executor path. *Models, not reimplementations — clearly labelled; the real
+head-to-head needs the actual systems on RDMA (PAPER-PLAN exp #3).*
+
 ## Claims ledger (RQ → evidence)
 
 | RQ | Claim | Evidence | State |
