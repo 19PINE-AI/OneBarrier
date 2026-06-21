@@ -114,16 +114,22 @@ static void capture(int fd, const void *buf, ssize_t n) {
  * init trap: the interceptors below NEVER call dlsym themselves — if the real
  * symbol isn't resolved yet (a call during ld.so init, before this constructor
  * runs) they fall back to the raw syscall.  No recursion, no TLS. */
-__attribute__((constructor)) static void ob_ctor(void) { ob_init(); }
+__attribute__((constructor)) static void ob_ctor(void) { ob_init(); nd_dump(); }
 
 int gettimeofday(struct timeval *tv, void *tz) {
-    __atomic_fetch_add(&nd_gettimeofday, 1, __ATOMIC_RELAXED);
-    if (real_gettimeofday) return real_gettimeofday(tv, tz);
+    long c = __atomic_add_fetch(&nd_gettimeofday, 1, __ATOMIC_RELAXED);
+    if (real_gettimeofday) {
+        if ((c % 50000) == 0) nd_dump(); /* periodic dump even for non-socket apps */
+        return real_gettimeofday(tv, tz);
+    }
     return syscall(SYS_gettimeofday, tv, tz);
 }
 int clock_gettime(clockid_t id, struct timespec *ts) {
-    __atomic_fetch_add(&nd_clock_gettime, 1, __ATOMIC_RELAXED);
-    if (real_clock_gettime) return real_clock_gettime(id, ts);
+    long c = __atomic_add_fetch(&nd_clock_gettime, 1, __ATOMIC_RELAXED);
+    if (real_clock_gettime) {
+        if ((c % 50000) == 0) nd_dump();
+        return real_clock_gettime(id, ts);
+    }
     return syscall(SYS_clock_gettime, id, ts);
 }
 ssize_t getrandom(void *buf, size_t len, unsigned int flags) {

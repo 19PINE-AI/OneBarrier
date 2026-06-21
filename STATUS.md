@@ -348,6 +348,24 @@ message-order via the fabric, virtualize a tiny time-only residual, and replay i
 deterministic. (Note: vDSO-inlined time paths can undercount via `LD_PRELOAD`;
 the full libOS intercepts the vDSO too — the residual is a floor, not a ceiling.)
 
+### GATE B — transparent interception of unmodified **nginx** (2026-06-21)
+
+Stripped the nginx-service interference (a `master_process on` master kept
+respawning workers on the port — the `pkill -x nginx` patterns missed the
+`nginx: master/worker` process names), then ran **stock nginx** under the shim:
+
+- **2 280 000 bytes** of request stream captured over **20 000 keep-alive
+  requests**, served at **137 234 req/s, 0 failed** — a real multithreaded
+  production server fault-tolerantly intercepted, knowing nothing about OneBarrier.
+- **Empirical vDSO finding:** nginx's time counts are **0** — it reads time via the
+  **vDSO** fast path, which `LD_PRELOAD` cannot interpose (redis's `gettimeofday`
+  went through libc → 77k counted). This *confirms the documented caveat with a
+  measurement*: the full libOS must intercept the vDSO (or rdtsc) to virtualize
+  time for all apps; `LD_PRELOAD` covers the libc-call apps (redis) but not the
+  vDSO-inlined ones (nginx). The residual is real and bounded, and now characterized
+  per-app. GATE B reached for the interception + capture; full time-virtualized
+  replay of a vDSO app is the libOS build.
+
 ## Claims ledger (RQ → evidence)
 
 | RQ | Claim | Evidence | State |
