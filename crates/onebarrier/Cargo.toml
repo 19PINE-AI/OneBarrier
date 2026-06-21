@@ -41,3 +41,7 @@ path = "src/bin/ob_sweep.rs"
 [[bin]]
 name = "ob-scale"
 path = "src/bin/ob_scale.rs"
+
+[[bin]]
+name = "ob-http"
+path = "src/bin/ob_http.rs"

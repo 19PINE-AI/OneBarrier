@@ -16,6 +16,7 @@
 pub mod bench;
 pub mod cluster;
 pub mod durable;
+pub mod http;
 pub mod memcache;
 pub mod resp;
 pub mod server;
