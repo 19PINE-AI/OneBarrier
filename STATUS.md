@@ -169,6 +169,24 @@ to 512 processes because ordering is offloaded to switches), which a single-host
 simulation cannot exhibit. Honest split: **correctness-at-scale validated here;
 overhead-flatness inherited from the 1Pipe hardware result.**
 
+### RQ5 — passive vs active SMR execution CPU (2026-06-21)
+
+`cargo run --release -p onebarrier --bin ob-cpu` — 5 000 ops, ~20 µs apply cost:
+
+| replicas | active-SMR CPU ms | passive (OB) CPU ms | savings |
+|---------:|------------------:|--------------------:|--------:|
+| 2 | 205.9 | 105.7 | 49% |
+| 3 | 309.5 | 108.7 | 65% |
+| 5 | 519.5 | 114.5 | 78% |
+| 7 | 729.7 | 123.1 | 83% |
+
+**Read-out:** active SMR's execution CPU grows **linearly** with the replica count
+(≈ N × 104 ms — every replica runs the state machine); OneBarrier passive keeps it
+**≈ 1×** (106→123 ms; the small rise is the log-only backups' cheap I/O, which
+never execute the state machine). This is the core resource win of passive
+checkpoint-replay over active SMR, isolated and measured. Guarded by
+`bench::passive_uses_less_execution_cpu_than_active_smr`.
+
 ## Claims ledger (RQ → evidence)
 
 | RQ | Claim | Evidence | State |
@@ -177,7 +195,7 @@ overhead-flatness inherited from the 1Pipe hardware result.**
 | RQ2 | FT marginal cost ≈ 0 over reliable-1Pipe baseline (in-fabric tier) | `ob-bench`: 0.23% marginal; fsync stacks ~3ms | **validated** (reproduction) |
 | RQ1 | Steady-state throughput vs Redis baselines | `redis-benchmark`: in-mem FT 59-98% of non-FT Redis; fsync collapses | **validated** (reproduction) |
 | RQ3 | Recovery: durable prefix + state-transfer catch-up after crash | live-fabric crash test | **validated** (functional; latency sweep todo) |
-| RQ5 | Cores vs SMR | — | not yet |
+| RQ5 | Passive vs active SMR execution CPU | `ob-cpu`: passive ~1x, active ~Nx (49-83% savings) | **validated** |
 | RQ6 | Convergence at scale (3-9 replicas); overhead-flatness inherited from 1Pipe | `ob-scale`: correct at every scale | **validated** (correctness; flatness is 1Pipe hw) |
 | RQ7 | Contribution ablation (order-log off; LLFT/HyCoR head-to-head) | — | not yet |
 | RQ8 | Snapshot-interval tradeoff (overhead vs recovery) | `ob-sweep`: 3x overhead at small interval, 283x recovery at large | **validated** |

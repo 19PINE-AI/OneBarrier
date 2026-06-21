@@ -45,3 +45,7 @@ path = "src/bin/ob_scale.rs"
 [[bin]]
 name = "ob-http"
 path = "src/bin/ob_http.rs"
+
+[[bin]]
+name = "ob-cpu"
+path = "src/bin/ob_cpu.rs"

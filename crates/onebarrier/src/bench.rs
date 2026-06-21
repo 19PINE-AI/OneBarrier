@@ -259,6 +259,100 @@ pub fn sweep_snapshot_interval(dir: &std::path::Path, intervals: &[u64], ops: u6
     out
 }
 
+// ---------------------------------------------------------------------------
+// RQ5 — passive (OneBarrier) vs active SMR execution CPU
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct CpuResult {
+    pub mode: String,
+    pub replicas: usize,
+    /// Total execution CPU across all replicas (ms) — the resource the FT scheme
+    /// spends on running the state machine.
+    pub exec_cpu_ms: f64,
+}
+
+/// Busy-spin `us` microseconds to model an expensive state-machine apply.
+fn spin_us(us: u64) {
+    if us == 0 {
+        return;
+    }
+    let end = Instant::now() + Duration::from_micros(us);
+    while Instant::now() < end {
+        std::hint::spin_loop();
+    }
+}
+
+/// RQ5: compare execution CPU of **active SMR** (every one of `replicas` runs the
+/// state machine) vs **OneBarrier passive** (one executor runs it; the other
+/// `replicas-1` are log-only backups that durably store ops without executing).
+/// With a non-trivial apply cost, passive spends ≈ 1/replicas the execution CPU.
+pub fn bench_cpu_passive_vs_active(dir: &std::path::Path, ops: u64, apply_us: u64, replicas: usize) -> (CpuResult, CpuResult) {
+    use std::thread;
+
+    // Active: `replicas` executor threads, each applies every op (+apply cost).
+    let active_cpu = {
+        let handles: Vec<_> = (0..replicas)
+            .map(|r| {
+                let d = dir.join(format!("active-{r}"));
+                let _ = std::fs::remove_dir_all(&d);
+                thread::spawn(move || {
+                    let mut e = crate::Engine::<crate::KvStore>::create(&d, 1_000_000, false).unwrap();
+                    let t = Instant::now();
+                    for i in 0..ops {
+                        let op = crate::Op::incr(1, i + 1, &format!("k{}", i % 64), 1);
+                        e.deliver(onepipe_core::timestamp::Timestamp::from_nanos(i + 1), &op).unwrap();
+                        spin_us(apply_us);
+                    }
+                    t.elapsed().as_secs_f64() * 1000.0
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).sum::<f64>()
+    };
+
+    // Passive: 1 executor (applies + apply cost) + (replicas-1) log-only backups.
+    let passive_cpu = {
+        let exec = {
+            let d = dir.join("passive-exec");
+            let _ = std::fs::remove_dir_all(&d);
+            thread::spawn(move || {
+                let mut e = crate::Engine::<crate::KvStore>::create(&d, 1_000_000, false).unwrap();
+                let t = Instant::now();
+                for i in 0..ops {
+                    let op = crate::Op::incr(1, i + 1, &format!("k{}", i % 64), 1);
+                    e.deliver(onepipe_core::timestamp::Timestamp::from_nanos(i + 1), &op).unwrap();
+                    spin_us(apply_us);
+                }
+                t.elapsed().as_secs_f64() * 1000.0
+            })
+        };
+        let backups: Vec<_> = (0..replicas.saturating_sub(1))
+            .map(|r| {
+                let d = dir.join(format!("passive-log-{r}"));
+                let _ = std::fs::remove_dir_all(&d);
+                thread::spawn(move || {
+                    // Log-only: durably store each op, do NOT execute the state machine.
+                    let mut log = crate::durable::Durable::open(&d, false).unwrap();
+                    let t = Instant::now();
+                    for i in 0..ops {
+                        let op = crate::Op::incr(1, i + 1, &format!("k{}", i % 64), 1);
+                        log.append(i + 1, &op.encode()).unwrap();
+                    }
+                    t.elapsed().as_secs_f64() * 1000.0
+                })
+            })
+            .collect();
+        exec.join().unwrap() + backups.into_iter().map(|h| h.join().unwrap()).sum::<f64>()
+    };
+
+    let _ = std::fs::remove_dir_all(dir);
+    (
+        CpuResult { mode: "active-SMR".into(), replicas, exec_cpu_ms: active_cpu },
+        CpuResult { mode: "passive-OneBarrier".into(), replicas, exec_cpu_ms: passive_cpu },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,6 +364,19 @@ mod tests {
         d.push(format!("ob-bench-{}-{}-{}", tag, std::process::id(), k));
         let _ = std::fs::remove_dir_all(&d);
         d
+    }
+
+    #[test]
+    fn passive_uses_less_execution_cpu_than_active_smr() {
+        // With a real apply cost, passive (1 executor + log-only backups) spends
+        // markedly less execution CPU than active SMR (N executors).
+        let dir = tmpdir("cpu");
+        let (active, passive) = bench_cpu_passive_vs_active(&dir, 2_000, 20, 4);
+        assert!(
+            passive.exec_cpu_ms < active.exec_cpu_ms * 0.6,
+            "passive {} ms should be well under active {} ms",
+            passive.exec_cpu_ms, active.exec_cpu_ms
+        );
     }
 
     #[test]
