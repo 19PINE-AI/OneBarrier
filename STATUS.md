@@ -366,6 +366,27 @@ respawning workers on the port — the `pkill -x nginx` patterns missed the
   per-app. GATE B reached for the interception + capture; full time-virtualized
   replay of a vDSO app is the libOS build.
 
+### Real checkpoint-replay competitor — CRIU (measured, not modeled) — 2026-06-21
+
+`criu dump` of a memory-holding process (the HyCoR/Remus checkpoint mechanism),
+measured:
+
+| process RSS | checkpoint time | image size |
+|---:|---:|---:|
+| 30 MB | 37 ms | 31 MB |
+| 120 MB | 65 ms | 121 MB |
+| 300 MB | 121 ms | 301 MB |
+
+**Read-out:** checkpoint-replay FT pays a **stop-the-world, full-memory dump whose
+cost grows with state** (~0.3–0.4 ms/MB; image = entire RSS). For a stateful
+service that is tens-to-hundreds of ms *and* a full-memory image **per
+checkpoint** — vs OneBarrier's **incremental per-op log** (bytes/op, µs, riding
+the fabric, no stop-the-world). This is the measured basis for "log-based FT beats
+checkpoint-based FT on steady-state overhead for non-trivial state" — the
+`ob-compare` HyCoR row, now grounded in a real CRIU number. (CRIU *restore* failed
+under the sandbox's namespace restrictions; the dump cost is the FT-relevant
+steady-state metric.)
+
 ## Claims ledger (RQ → evidence)
 
 | RQ | Claim | Evidence | State |
