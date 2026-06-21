@@ -1,0 +1,18 @@
+[package]
+name = "onebarrier"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+description = "Transparent passive fault tolerance as a byproduct of total-order communication (built on the 1Pipe fabric)."
+
+# OneBarrier builds on the local 1Pipe reproduction, expected as a sibling
+# checkout at ../../../1Pipe (i.e. ~/1Pipe). See docs/PLAN.md §8.
+[dependencies]
+onepipe-core = { path = "../../../1Pipe/crates/1pipe-core" }
+
+[dev-dependencies]
+
+[[bin]]
+name = "ob-demo"
+path = "src/bin/ob_demo.rs"
