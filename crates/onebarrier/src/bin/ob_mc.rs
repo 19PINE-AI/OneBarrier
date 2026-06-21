@@ -1,18 +1,19 @@
-//! `ob-kv` — the OneBarrier RESP key-value server. A durable, crash-recoverable
-//! Redis-protocol service on the OneBarrier engine. Drive it with `redis-cli -p
-//! <port>` or `redis-benchmark -p <port> -t set,get,incr`.
+//! `ob-mc` — the OneBarrier Memcached (text-protocol) server. Durable,
+//! crash-recoverable. Drive with `memtier_benchmark --protocol=memcache_text -p
+//! <port>` or `nc <host> <port>`.
 //!
-//!   ob-kv [--port N] [--dir PATH] [--fsync] [--snap-interval N]
+//!   ob-mc [--port N] [--dir PATH] [--fsync] [--snap-interval N]
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use onebarrier::server::{run, RespProtocol, ServerConfig};
+use onebarrier::memcache::MemcacheProtocol;
+use onebarrier::server::{run, ServerConfig};
 
 fn main() -> std::io::Result<()> {
-    let mut port: u16 = 6399;
-    let mut dir = PathBuf::from("/tmp/ob-kv-data");
+    let mut port: u16 = 11311;
+    let mut dir = PathBuf::from("/tmp/ob-mc-data");
     let mut fsync = false;
     let mut snap_interval: u64 = 10_000;
 
@@ -26,7 +27,7 @@ fn main() -> std::io::Result<()> {
                 snap_interval = args.next().and_then(|v| v.parse().ok()).unwrap_or(snap_interval);
             }
             "--help" | "-h" => {
-                println!("ob-kv [--port N] [--dir PATH] [--fsync] [--snap-interval N]");
+                println!("ob-mc [--port N] [--dir PATH] [--fsync] [--snap-interval N]");
                 return Ok(());
             }
             _ => {}
@@ -40,7 +41,7 @@ fn main() -> std::io::Result<()> {
             snap_interval,
             fsync,
         },
-        Arc::new(RespProtocol),
-        "ob-kv",
+        Arc::new(MemcacheProtocol),
+        "ob-mc",
     )
 }

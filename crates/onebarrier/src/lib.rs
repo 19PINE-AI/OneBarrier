@@ -16,6 +16,7 @@
 pub mod bench;
 pub mod cluster;
 pub mod durable;
+pub mod memcache;
 pub mod resp;
 pub mod server;
 pub mod state;
@@ -162,6 +163,13 @@ impl<S: StateMachine> Engine<S> {
     }
     pub fn last_ts(&self) -> u64 {
         self.last_ts
+    }
+    /// Highest client id present in the dedup high-water map. New client
+    /// identities must start above this so they cannot be mistaken for
+    /// already-applied ops after recovery (exactly-once relies on `(client,seq)`
+    /// being a stable, never-reused identity).
+    pub fn max_client(&self) -> u32 {
+        self.applied.keys().copied().max().unwrap_or(0)
     }
 
     /// Export this engine's full state for a **state transfer** to a recovering

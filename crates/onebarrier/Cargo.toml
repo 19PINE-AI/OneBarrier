@@ -25,3 +25,7 @@ path = "src/bin/ob_bench.rs"
 [[bin]]
 name = "ob-kv"
 path = "src/bin/ob_kv.rs"
+
+[[bin]]
+name = "ob-mc"
+path = "src/bin/ob_mc.rs"
