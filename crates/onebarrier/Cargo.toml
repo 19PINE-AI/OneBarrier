@@ -33,3 +33,7 @@ path = "src/bin/ob_mc.rs"
 [[bin]]
 name = "ob-replay"
 path = "src/bin/ob_replay.rs"
+
+[[bin]]
+name = "ob-sweep"
+path = "src/bin/ob_sweep.rs"

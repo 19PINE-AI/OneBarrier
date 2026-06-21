@@ -204,6 +204,61 @@ pub fn run_bench(cfg: &BenchConfig, dir: &std::path::Path) -> io::Result<BenchRe
     })
 }
 
+// ---------------------------------------------------------------------------
+// RQ8 — snapshot-interval tradeoff (engine level, deterministic)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct SnapResult {
+    pub interval: u64,
+    pub ops: u64,
+    /// Snapshots taken during the run (steady-state overhead driver).
+    pub snapshots: u64,
+    /// Per-op apply cost incl. amortized snapshotting (µs).
+    pub apply_us_per_op: f64,
+    /// Records replayed on recovery (≤ interval): the recovery-cost driver.
+    pub replay_records: u64,
+    /// Wall-clock recovery time (µs).
+    pub recover_us: f64,
+}
+
+/// Sweep the snapshot interval and measure the steady-state-overhead vs
+/// recovery-cost tradeoff (docs/PLAN.md §7 RQ8; the recovery-model `I*` rule):
+/// small interval ⇒ more snapshots (higher steady overhead), fewer replay
+/// records (faster recovery); large interval ⇒ the reverse.
+pub fn sweep_snapshot_interval(dir: &std::path::Path, intervals: &[u64], ops: u64, keys: u64) -> Vec<SnapResult> {
+    let mut out = Vec::new();
+    for &interval in intervals {
+        let d = dir.join(format!("snap-{interval}"));
+        let _ = std::fs::remove_dir_all(&d);
+
+        let t0 = Instant::now();
+        let mut e = crate::Engine::<crate::KvStore>::create(&d, interval, false).unwrap();
+        for i in 0..ops {
+            let op = crate::Op::incr(1, i + 1, &format!("k{}", i % keys), 1);
+            e.deliver(onepipe_core::timestamp::Timestamp::from_nanos(i + 1), &op).unwrap();
+        }
+        let apply_us = t0.elapsed().as_nanos() as f64 / 1000.0;
+        let snapshots = e.stats.snapshots;
+        drop(e); // close durable store
+
+        let t1 = Instant::now();
+        let er = crate::Engine::<crate::KvStore>::recover(&d, interval, false).unwrap();
+        let recover_us = t1.elapsed().as_nanos() as f64 / 1000.0;
+
+        out.push(SnapResult {
+            interval,
+            ops,
+            snapshots,
+            apply_us_per_op: apply_us / ops as f64,
+            replay_records: er.stats.replayed,
+            recover_us,
+        });
+        let _ = std::fs::remove_dir_all(&d);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +270,18 @@ mod tests {
         d.push(format!("ob-bench-{}-{}-{}", tag, std::process::id(), k));
         let _ = std::fs::remove_dir_all(&d);
         d
+    }
+
+    #[test]
+    fn snapshot_interval_tradeoff_holds() {
+        // Smaller interval ⇒ more snapshots but fewer replay records on recovery.
+        let dir = tmpdir("snapsweep");
+        let r = sweep_snapshot_interval(&dir, &[64, 100_000], 20_000, 32);
+        let small = &r[0];
+        let large = &r[1];
+        assert!(small.snapshots > large.snapshots, "small interval should snapshot more: {} vs {}", small.snapshots, large.snapshots);
+        assert!(small.replay_records < large.replay_records, "small interval should replay fewer: {} vs {}", small.replay_records, large.replay_records);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

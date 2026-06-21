@@ -129,6 +129,25 @@ network input stream but not yet time/RNG/scheduling non-determinism — see
 treatment; this brings the *unmodified*-binary case as close as user-space
 interposition allows.
 
+### RQ8 — snapshot-interval tradeoff (2026-06-21)
+
+`cargo run --release -p onebarrier --bin ob-sweep` — 50 000 ops, sweep the
+snapshot interval:
+
+| interval | snapshots | apply µs/op | replay records | recovery µs |
+|---------:|----------:|------------:|---------------:|------------:|
+| 64       | 781       | **1.215**   | 16             | **20.7**    |
+| 512      | 97        | 0.439       | 336            | 58.6        |
+| 4096     | 12        | 0.407       | 848            | 134.1       |
+| 100000   | 0         | 0.407       | 50000          | **5856.4**  |
+
+**Read-out:** small interval ⇒ many snapshots ⇒ **3× steady-state apply overhead**
+(1.215 vs 0.407 µs/op) but **fast recovery** (20.7 µs); large interval ⇒ minimal
+steady overhead but **283× slower recovery** (5856 µs, full replay). Recovery time
+scales linearly with replay records exactly as the recovery model predicts; the
+`I*` sweet spot is the interior (here ~512–4096). Guarded by
+`bench::snapshot_interval_tradeoff_holds`.
+
 ## Claims ledger (RQ → evidence)
 
 | RQ | Claim | Evidence | State |
@@ -140,4 +159,4 @@ interposition allows.
 | RQ5 | Cores vs SMR | — | not yet |
 | RQ6 | Overhead flat vs scale | — | not yet |
 | RQ7 | Contribution ablation (order-log off; LLFT/HyCoR head-to-head) | — | not yet |
-| RQ8 | Boundary costs (quiesce, edge buffering, snapshot interval) | — | not yet |
+| RQ8 | Snapshot-interval tradeoff (overhead vs recovery) | `ob-sweep`: 3x overhead at small interval, 283x recovery at large | **validated** |
