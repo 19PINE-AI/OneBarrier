@@ -20,6 +20,7 @@ pub mod http;
 pub mod memcache;
 pub mod resp;
 pub mod server;
+pub mod sim;
 pub mod state;
 pub mod streamlog;
 pub mod txn;

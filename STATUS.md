@@ -255,6 +255,36 @@ theory predicts (an acked write is durable because the ack follows the durable
 append; an in-flight op is unknowable). This is end-to-end linearizable durability
 under concurrent fault injection, on the real binary.
 
+### Formal verification (TLA+, model-checked) — 2026-06-21
+
+- **1Pipe total order** (`~/1Pipe/spec/OnePipeTotalOrder.tla`): the barrier
+  mechanism + FIFO gate proven to give one global total order + causality. TLC
+  exhaustive, **3,505,634 distinct states, depth 35, no error** (Procs={1,2},
+  MaxTs=3). Pushed to the open-source 1Pipe repo.
+- **OneBarrier engine** (`spec/OneBarrierEngine.tla`): **ExactlyOnce** (`value =
+  |applied|`) and **NoLostAck** (every acked op survives every crash) proven
+  across all crash/recover interleavings. TLC exhaustive, **no error** (up to
+  Clients={1,2,3}, MaxSeq=2). The formal companion to the `ob-jepsen` result.
+
+### Simulation @ RDMA operating point (GATE A) — 2026-06-21
+
+`cargo run --release -p onebarrier --bin ob-sim` — discrete-event sim, single
+executor + Poisson arrivals, **latency model from the 1Pipe paper** (RDMA RTT
+2 µs, reliable barrier 2 µs, apply 0.5 µs). Absolute µs are *simulated*; the
+*shape* is the result. p50/p99/p99.9 µs by offered load:
+
+| load | reliable-1Pipe | FT-overlap | FT-fsync |
+|-----:|----------------|------------|----------|
+| 0.30 | 4.5/5.5/6.0 | **4.5/5.5/6.0** | 4.5e8/8.9e8/9.0e8 |
+| 0.70 | 4.9/7.7/9.4 | **4.9/7.7/9.4** | collapse |
+| 0.95 | 7.7/25.3/33.9 | **7.7/25.3/33.9** | collapse |
+
+**GATE A — pass (simulated):** at 2 µs RTT, FT-overlap's tail is **identical** to
+the reliable-1Pipe baseline at every load — the output-commit barrier *is* the
+durability barrier when the durable write rides 1Pipe's 2PC phase-1 (in-fabric
+RDMA). Serial-fsync durability collapses the tail — the output-hold failure mode
+that sank Remus. Guarded by `sim::ft_overlap_matches_baseline_and_fsync_collapses`.
+
 ## Claims ledger (RQ → evidence)
 
 | RQ | Claim | Evidence | State |

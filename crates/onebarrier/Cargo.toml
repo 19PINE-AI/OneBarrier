@@ -69,3 +69,7 @@ path = "src/bin/ob_baselines.rs"
 [[bin]]
 name = "ob-jepsen"
 path = "src/bin/ob_jepsen.rs"
+
+[[bin]]
+name = "ob-sim"
+path = "src/bin/ob_sim.rs"
