@@ -17,3 +17,7 @@ onepipe-net = { path = "../../../1Pipe/crates/1pipe-net" }
 [[bin]]
 name = "ob-demo"
 path = "src/bin/ob_demo.rs"
+
+[[bin]]
+name = "ob-bench"
+path = "src/bin/ob_bench.rs"

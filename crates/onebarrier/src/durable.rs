@@ -21,6 +21,11 @@ pub struct Durable {
     log_path: PathBuf,
     snap_path: PathBuf,
     fsync: bool,
+    /// Cached append handle (opened lazily). Holding it open is what makes the
+    /// in-memory/no-fsync tier a single `write()` syscall per op (data in the OS
+    /// page cache — survives process crash, not power loss) rather than an
+    /// open+write+close. The fsync tier adds `sync_all` (stable storage).
+    log: Option<File>,
 }
 
 impl Durable {
@@ -33,12 +38,16 @@ impl Durable {
             snap_path: dir.join("snapshot"),
             dir,
             fsync,
+            log: None,
         })
     }
 
     /// Append one ordered record: `ts(8) len(4) op_bytes`.
-    pub fn append(&self, ts: u64, op_bytes: &[u8]) -> io::Result<()> {
-        let mut f = OpenOptions::new().create(true).append(true).open(&self.log_path)?;
+    pub fn append(&mut self, ts: u64, op_bytes: &[u8]) -> io::Result<()> {
+        if self.log.is_none() {
+            self.log = Some(OpenOptions::new().create(true).append(true).open(&self.log_path)?);
+        }
+        let f = self.log.as_mut().unwrap();
         let mut rec = Vec::with_capacity(12 + op_bytes.len());
         rec.extend_from_slice(&ts.to_le_bytes());
         rec.extend_from_slice(&(u32::try_from(op_bytes.len()).unwrap_or(u32::MAX)).to_le_bytes());
@@ -51,7 +60,7 @@ impl Durable {
     }
 
     /// Atomically install a snapshot, then clear the now-covered log.
-    pub fn write_snapshot(&self, bytes: &[u8]) -> io::Result<()> {
+    pub fn write_snapshot(&mut self, bytes: &[u8]) -> io::Result<()> {
         let tmp = self.dir.join("snapshot.tmp");
         {
             let mut f = File::create(&tmp)?;
@@ -62,6 +71,7 @@ impl Durable {
         }
         fs::rename(&tmp, &self.snap_path)?;
         // Everything up to the snapshot's last_ts is now captured; clear the log.
+        self.log = None; // drop the cached handle before removing the file
         let _ = fs::remove_file(&self.log_path);
         Ok(())
     }
