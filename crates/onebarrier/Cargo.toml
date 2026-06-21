@@ -53,3 +53,7 @@ path = "src/bin/ob_cpu.rs"
 [[bin]]
 name = "ob-order"
 path = "src/bin/ob_order.rs"
+
+[[bin]]
+name = "ob-txn"
+path = "src/bin/ob_txn.rs"

@@ -26,6 +26,10 @@ pub enum OpKind {
     Del(String),
     /// Read-only.
     Get(String),
+    /// Atomic multi-key write (the database/transaction primitive): a list of
+    /// `(key, Some(value)=set | None=delete)` applied all-or-nothing as one
+    /// totally-ordered, durably-logged unit — so it commits and recovers atomically.
+    Txn(Vec<(String, Option<Vec<u8>>)>),
 }
 
 /// The result handed back to the caller (and, in the server, the value that
@@ -58,6 +62,9 @@ impl Op {
     pub fn get(client: u32, seq: u64, key: &str) -> Self {
         Self { client, seq, kind: OpKind::Get(key.to_string()) }
     }
+    pub fn txn(client: u32, seq: u64, writes: Vec<(String, Option<Vec<u8>>)>) -> Self {
+        Self { client, seq, kind: OpKind::Txn(writes) }
+    }
 
     /// Wire/log encoding: `tag(1) client(4) seq(8) keylen(2) key [vallen(4) val | delta(8)]`.
     pub fn encode(&self) -> Vec<u8> {
@@ -67,6 +74,7 @@ impl Op {
             OpKind::Incr(k, _) => (1, k),
             OpKind::Get(k) => (2, k),
             OpKind::Del(k) => (3, k),
+            OpKind::Txn(_) => (4, ""),
         };
         let kb = key.as_bytes();
         o.push(tag);
@@ -81,6 +89,22 @@ impl Op {
             }
             OpKind::Incr(_, d) => o.extend_from_slice(&d.to_le_bytes()),
             OpKind::Get(_) | OpKind::Del(_) => {}
+            OpKind::Txn(writes) => {
+                o.extend_from_slice(&(u16::try_from(writes.len()).unwrap_or(u16::MAX)).to_le_bytes());
+                for (k, v) in writes {
+                    let kb = k.as_bytes();
+                    o.extend_from_slice(&(u16::try_from(kb.len()).unwrap_or(u16::MAX)).to_le_bytes());
+                    o.extend_from_slice(kb);
+                    match v {
+                        Some(val) => {
+                            o.push(1);
+                            o.extend_from_slice(&(u32::try_from(val.len()).unwrap_or(u32::MAX)).to_le_bytes());
+                            o.extend_from_slice(val);
+                        }
+                        None => o.push(0),
+                    }
+                }
+            }
         }
         o
     }
@@ -100,6 +124,23 @@ impl Op {
             1 => OpKind::Incr(key, r.i64()?),
             2 => OpKind::Get(key),
             3 => OpKind::Del(key),
+            4 => {
+                let n = r.u16()? as usize;
+                let mut writes = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let kl = r.u16()? as usize;
+                    let k = String::from_utf8(r.bytes(kl)?.to_vec()).ok()?;
+                    let v = match r.u8()? {
+                        1 => {
+                            let vl = r.u32()? as usize;
+                            Some(r.bytes(vl)?.to_vec())
+                        }
+                        _ => None,
+                    };
+                    writes.push((k, v));
+                }
+                OpKind::Txn(writes)
+            }
             _ => return None,
         };
         Some(Self { client, seq, kind })
@@ -164,6 +205,21 @@ impl StateMachine for KvStore {
             }
             OpKind::Del(k) => Output::Value(Some(i64::from(self.map.remove(k).is_some()))),
             OpKind::Get(k) => Output::Bytes(self.map.get(k).cloned()),
+            OpKind::Txn(writes) => {
+                // Atomic all-or-nothing: one deliver = one durable record = applied
+                // and recovered together.
+                for (k, v) in writes {
+                    match v {
+                        Some(val) => {
+                            self.map.insert(k.clone(), val.clone());
+                        }
+                        None => {
+                            self.map.remove(k);
+                        }
+                    }
+                }
+                Output::Value(Some(writes.len() as i64))
+            }
         }
     }
 

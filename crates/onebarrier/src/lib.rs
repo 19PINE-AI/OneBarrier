@@ -21,6 +21,7 @@ pub mod memcache;
 pub mod resp;
 pub mod server;
 pub mod state;
+pub mod txn;
 
 use std::collections::BTreeMap;
 use std::io;
