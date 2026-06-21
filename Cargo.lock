@@ -7,8 +7,24 @@ name = "onebarrier"
 version = "0.1.0"
 dependencies = [
  "onepipe-core",
+ "onepipe-net",
 ]
 
 [[package]]
 name = "onepipe-core"
 version = "0.1.0"
+
+[[package]]
+name = "onepipe-net"
+version = "0.1.0"
+dependencies = [
+ "onepipe-core",
+ "onepipe-wire",
+]
+
+[[package]]
+name = "onepipe-wire"
+version = "0.1.0"
+dependencies = [
+ "onepipe-core",
+]

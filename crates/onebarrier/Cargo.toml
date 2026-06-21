@@ -10,6 +10,7 @@ description = "Transparent passive fault tolerance as a byproduct of total-order
 # checkout at ../../../1Pipe (i.e. ~/1Pipe). See docs/PLAN.md §8.
 [dependencies]
 onepipe-core = { path = "../../../1Pipe/crates/1pipe-core" }
+onepipe-net = { path = "../../../1Pipe/crates/1pipe-net" }
 
 [dev-dependencies]
 

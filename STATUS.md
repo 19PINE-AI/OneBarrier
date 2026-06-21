@@ -9,7 +9,7 @@ as the autonomous research proceeds.
 | ID | Milestone | State |
 |----|-----------|-------|
 | M0 | Replication core: deterministic-replay KV state machine, durable ordered log, timestamp-T snapshot, exactly-once output suppression, crash recovery | **done** ✅ |
-| M1 | Networked OneBarrier node over the live 1Pipe `ReliableHost` fabric; kill-and-recover demo | todo |
+| M1 | OneBarrier cluster over the live 1Pipe `ReliableHost` fabric: clients scatter ops, replicas apply the totally-ordered stream, converge | **done** ✅ |
 | M2 | RQ2 harness — output-commit latency decomposition + durability-tier sweep + serial ablation (the make-or-break measurement) | todo |
 | M3 | Application suite (production-grade, end-to-end): Redis/Memcached/Nginx/Node/SQLite-class on the libOS socket shim | todo |
 | M4 | In-harness baselines: LLFT-style host-virtual-time order, HyCoR-style nondeterminism logging, SMR (N active), logging-FT | todo |
@@ -34,6 +34,19 @@ test result: ok. 5 passed; 0 failed
 replays the 2 post-snapshot records, state reconstructed exactly
 (`balance=120, name_len=8`), and a re-delivered in-flight `INCR` is **Suppressed**
 (exactly-once across recovery — the Set-vs-Incr money result, RQ4 micro).
+
+### M1 — replicated execution over the live fabric (2026-06-21)
+
+```
+$ cargo test -p onebarrier   # 6 tests, incl:
+test cluster::tests::replicas_converge_to_exact_state_over_live_fabric ... ok
+```
+
+3 replica nodes + 2 client nodes on real loopback UDP (the 1Pipe `ReliableHost`
+path). Clients scatter 150 INCR ops each; every replica applies the fabric's
+single global total order through its `Engine` with **no message-order log**, and
+all 3 replicas converge to the exact expected state (300 increments over 8 keys).
+Convergence + correctness (commutative-sum oracle) both asserted.
 
 ## Claims ledger (RQ → evidence)
 

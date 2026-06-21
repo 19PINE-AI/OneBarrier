@@ -13,6 +13,7 @@
 //! snapshot, so a duplicate op replayed after recovery is recognized and neither
 //! re-applied nor re-externalized — the Set-vs-Incr correctness result (RQ4).
 
+pub mod cluster;
 pub mod durable;
 pub mod state;
 

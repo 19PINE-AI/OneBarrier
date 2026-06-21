@@ -109,6 +109,10 @@ impl KvStore {
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
+    /// Full contents as a sorted vector — for cross-replica convergence checks.
+    pub fn entries(&self) -> Vec<(String, i64)> {
+        self.map.iter().map(|(k, v)| (k.clone(), *v)).collect()
+    }
 }
 
 impl StateMachine for KvStore {
