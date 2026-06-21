@@ -12,8 +12,8 @@ as the autonomous research proceeds.
 | M1 | OneBarrier cluster over the live 1Pipe `ReliableHost` fabric: clients scatter ops, replicas apply the totally-ordered stream, converge | **done** ✅ |
 | M2 | RQ2 harness — output-commit latency decomposition + durability-tier comparison (in-fabric/mem vs fsync) on the live fabric | **done** ✅ |
 | M3 | Apps (production, end-to-end) on a shared `KvService` — durable, crash-recoverable, real clients: RESP (Redis), Memcached, HTTP/1.1 REST, transactional store (atomic txns), pub/sub streaming log | **5/5 done** ✅ |
-| M4 | In-harness baselines: LLFT-style host-virtual-time order, HyCoR-style nondeterminism logging, SMR (N active), logging-FT | todo |
-| M5 | Jepsen-style linearizability checker (RQ4) + recovery/scale sweeps (RQ3/RQ5/RQ6) | todo |
+| M4 | In-harness baselines | **partial**: real-Redis (no-FT / AOF-everysec / AOF-always) RQ1, central-sequencer RQ7, active-SMR RQ5 done; LLFT/HyCoR host-virtual-time + nondeterminism-logging modes remain |
+| M5 | Correctness-under-fault + sweeps | **partial**: crash-injection correctness (engine + live fabric) RQ3/RQ4, scale RQ6, CPU RQ5, interval RQ8 done; a broad concurrent-fault linearizability checker remains |
 | TB | Track B — transparent interception: `LD_PRELOAD` shim records an **unmodified** binary; `ob-replay` rebuilds state. Demoed on stock `redis-server` | **done** ✅ (scoped) |
 
 ## Reproducible results
