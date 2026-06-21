@@ -55,18 +55,34 @@ exported symbols).
 
 ## The unified recovery harness
 
-`ob-recover.sh <redis|memcached|nginx|node> [gap_s]` runs the full cycle for an
-unmodified app: **record under the virtual clock → crash → wait a real-time gap →
-replay on a fresh instance → verify byte-identical time-dependent output**. Per-app
-time-dependent probes: redis `TIME`, memcached `stats` `time`, nginx `Date`
-header, Node `Date.now()`.
+`ob-recover.sh <redis|memcached|nginx|node|all> [gap_s]` runs the full cycle for
+an unmodified app and includes a **control** that pins down causality:
+
+1. **live** — record under the virtual clock,
+2. **crash** (`kill -9`) and wait `gap_s` of real wall-clock time,
+3. **replay** — fresh instance, same persisted base → byte-identical to live,
+4. **control** — fresh instance with **no** virtual clock → real time, *must differ*.
+
+Per-app time-dependent probes: redis `TIME`, memcached `stats time`, nginx `Date:`
+header, Node `Date.now()`. The verdict requires BOTH `replay == live` AND
+`control != live`, so a pass proves the determinism comes from the virtual clock,
+not from a trivially-identical test.
 
 ```bash
 gcc -shared -fPIC -O2 -o interpose/libobpreload.so interpose/obpreload.c -ldl -lpthread
 cargo build --release -p onebarrier --bin ob-replay
-bash interpose/ob-recover.sh redis 3       # → "redis DETERMINISTIC"
-bash interpose/recover-node.sh             # Node Date.now() determinism
+bash interpose/ob-recover.sh all 3         # all 4 unmodified apps, one command
+bash interpose/ob-recover.sh redis 3       # → "redis DETERMINISTIC ✅"
 bash interpose/demo.sh                      # stock-redis record-replay STATE recovery
+```
+
+Representative run (`all`, 3 s gap, 2026-06-21):
+
+```
+redis     live/replay 1782054868.424071 == 1782054868.424071  | control 1782054874.139431  ✅
+memcached live/replay STAT time 1782054875 == 1782054875       | control STAT time 1782054880  ✅
+nginx     live/replay Date 15:14:41 GMT == 15:14:41 GMT         | control Date 15:14:46 GMT  ✅
+node      live/replay {"now":1782054887981} == ...887981        | control {"now":1782054893724}  ✅
 ```
 
 ## Per-app status

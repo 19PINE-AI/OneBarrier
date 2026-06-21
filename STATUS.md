@@ -139,10 +139,12 @@ nondeterminism gap that record/replay-by-position left open (see
 count-independent — timer-driven reads (redis `serverCron`, nginx
 `ngx_time_update`, memcached `current_time`) no longer desync on replay.
 
-Verified end-to-end by `bash interpose/ob-recover.sh <app> 3`
+Verified end-to-end by `bash interpose/ob-recover.sh <app|all> 3`
 (record under the virtual clock → `kill -9` → **3 s real wall-clock gap** →
-replay on a fresh instance with the same persisted `base` → `diff`). All
-**byte-identical across the gap** (run 2026-06-21, current epoch ~1782054700):
+replay on a fresh instance with the same persisted `base` → `diff`, **plus a
+control** instance run with NO virtual clock whose real-time output *must differ*
+— so a pass proves the virtual clock causes the determinism, not a trivial test).
+All **byte-identical across the gap, control differs** (run 2026-06-21):
 
 | app | config | time-dependent probe | live = replay across 3 s real gap |
 |---|---|---|---|
