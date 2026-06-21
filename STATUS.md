@@ -428,6 +428,32 @@ despite the 4-second gap — *deterministic time recovery of an unmodified app*,
 transparent-FT vision realized for the time dimension. A control run (real time,
 no replay) differs, proving the nondeterminism that virtualization removes.
 
+### Multi-app finding: where time-virtualization-alone suffices (the boundary)
+
+Applying the same record/replay to **redis** (`TIME` command, the analog of
+`Date.now()`) reveals the precise boundary. Under replay, redis's `TIME` returned
+the **recorded** value once but **current** time the rest:
+
+```
+replay redis TIME (seconds): 1782052487 1782052448(recorded) 1782052487 1782052487 ...
+```
+
+The mechanism works (the recorded value does appear), but the **cursor desyncs**:
+redis's `serverCron` reads time on a **timer** (every ~100 ms), independent of
+requests, and the number of cron ticks differs between record and replay, so the
+time-read *sequence* misaligns. **Node aligned 8/8 because its reads are
+request-driven; redis diverges because its reads are timer-driven.** memcached
+(timer-updated `current_time`) is the redis case.
+
+**The citable result:** time-virtualization via record/replay gives deterministic
+recovery **for request-driven time reads** (node handler) but **needs
+deterministic scheduling for timer-driven reads** (redis/memcached `serverCron`).
+This empirically *bounds* the libOS scope and pinpoints the next piece —
+deterministic scheduling (PAPER-PLAN §2 item 5) — with a measurement, not a guess.
+(Separately, request-driven **state** recovery — SET/GET replay — is
+time-independent and works for all these KV apps, as the stock-redis record-replay
+demo shows.)
+
 **Honest edges (the libOS's remaining work):**
 - **vDSO is NOT a blocker** — `LD_PRELOAD` catches the exported
   `clock_gettime`/`gettimeofday` symbols (a controlled test counted exactly
