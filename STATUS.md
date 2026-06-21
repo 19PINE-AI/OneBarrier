@@ -76,14 +76,27 @@ Unit test `bench::in_fabric_durability_is_near_free_vs_fsync` guards the contras
 > tradeoff). The RDMA projection of the *delivery* baseline uses the paper's
 > testbed numbers; only the marginal-durability *contrast* is measured here.
 
+### Recovery & correctness under fault (RQ3/RQ4, 2026-06-21)
+
+Two tests, both green:
+- **Engine level (deterministic):** `crash_recover_then_state_transfer_catches_up`
+  — a replica crashes mid-stream, recovers a *consistent pre-crash prefix* from
+  its own durable store, catches up to the live cut via a state transfer from a
+  survivor, and that caught-up state survives a *second* crash (durable).
+- **Live fabric:** `survivor_stays_correct_and_victim_recovers_after_a_replica_crash`
+  — 3 replicas, replica 1 crashes after 60 ops; the 1Pipe fabric excises the dead
+  peer, the **survivors reach the exact expected state** (total order held across
+  the crash), and the victim recovers its prefix + state-transfers to converge.
+  Runs within the failure-detection window (whole suite 9 tests / ~3 s).
+
 ## Claims ledger (RQ → evidence)
 
 | RQ | Claim | Evidence | State |
 |----|-------|----------|-------|
-| RQ4 | Exactly-once across recovery; post-recovery state ≡ serial reference | `onebarrier` unit tests + `ob-demo` | partial (micro) |
+| RQ4 | Exactly-once & correct under fault; survivors correct across a live crash | unit + live-fabric crash tests | **validated** (functional) |
 | RQ2 | FT marginal cost ≈ 0 over reliable-1Pipe baseline (in-fabric tier) | `ob-bench`: 0.23% marginal; fsync stacks ~3ms | **validated** (reproduction) |
 | RQ1 | Steady-state overhead vs baselines | — | not yet |
-| RQ3 | Recovery speed & replay catch-up condition | — | not yet |
+| RQ3 | Recovery: durable prefix + state-transfer catch-up after crash | live-fabric crash test | **validated** (functional; latency sweep todo) |
 | RQ5 | Cores vs SMR | — | not yet |
 | RQ6 | Overhead flat vs scale | — | not yet |
 | RQ7 | Contribution ablation (order-log off; LLFT/HyCoR head-to-head) | — | not yet |

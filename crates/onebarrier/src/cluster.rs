@@ -207,6 +207,140 @@ pub fn run_cluster(cfg: &ClusterConfig, dir: &std::path::Path) -> io::Result<Clu
     })
 }
 
+/// Outcome of a crash run.
+#[derive(Clone, Debug)]
+pub struct CrashReport {
+    pub expected: Vec<(String, i64)>,
+    /// A survivor's final state (the fabric recovered from the replica crash).
+    pub survivor_state: Vec<(String, i64)>,
+    /// The victim recovered from its own durable store (a consistent prefix).
+    pub victim_prefix: Vec<(String, i64)>,
+    /// The victim after a state transfer from the survivor (caught up).
+    pub victim_caught_up: Vec<(String, i64)>,
+    pub survivor_correct: bool,
+    /// Victim's recovered prefix is a consistent under-approximation (each key
+    /// ≤ expected) — no corruption, no over-count.
+    pub victim_prefix_consistent: bool,
+    pub recovered_ok: bool,
+}
+
+/// RQ3/RQ4 on the live fabric: a replica crashes mid-run; survivors keep the
+/// total order and reach the correct state (the fabric excises the dead peer);
+/// the victim recovers its durable prefix and catches up via state transfer.
+pub fn run_cluster_with_crash(
+    cfg: &ClusterConfig,
+    dir: &std::path::Path,
+    victim: PeerId,
+    crash_after: u64,
+) -> io::Result<CrashReport> {
+    use std::sync::atomic::AtomicUsize;
+    let n = cfg.replicas + cfg.clients;
+    let eps: Vec<UdpEndpoint> = (0..n).map(|_| UdpEndpoint::bind(loopback())).collect::<io::Result<_>>()?;
+    let addrs: Vec<SocketAddr> = eps.iter().map(UdpEndpoint::local_addr).collect::<io::Result<_>>()?;
+    let replica_ids: Vec<PeerId> = (0..cfg.replicas as PeerId).collect();
+    let total = cfg.ops_per_client * cfg.clients as u64;
+    let n_survivors = cfg.replicas - 1;
+    let survivors_done = Arc::new(AtomicUsize::new(0));
+    let mut handles = Vec::new();
+
+    for (i, ep) in eps.into_iter().enumerate() {
+        let me = i as PeerId;
+        let peers: Vec<(PeerId, SocketAddr)> =
+            (0..n).filter(|&j| j != i).map(|j| (j as PeerId, addrs[j])).collect();
+        let is_replica = (i as usize) < cfg.replicas;
+        let is_victim = is_replica && me == victim;
+        let replica_ids = replica_ids.clone();
+        let cfg = *cfg;
+        let survivors_done = Arc::clone(&survivors_done);
+        let dir = dir.to_path_buf();
+
+        handles.push(thread::spawn(move || -> io::Result<Option<(PeerId, Vec<(String, i64)>, Vec<u8>, bool)>> {
+            let mut host = ReliableHost::new(ep, me, &peers, cfg.host);
+            let started = Instant::now();
+            if is_replica {
+                let mut eng = Engine::<KvStore>::create(dir.join(format!("replica-{me}")), cfg.snap_interval, false)?;
+                let mut applied = 0u64;
+                loop {
+                    for d in host.poll(Duration::from_millis(1)).unwrap_or_default() {
+                        if let Some(op) = Op::decode(&d.payload) {
+                            if !matches!(eng.deliver(d.msg_ts, &op)?, crate::Output::Suppressed) {
+                                applied += 1;
+                            }
+                        }
+                    }
+                    if is_victim && applied >= crash_after {
+                        // Crash: stop serving (drop socket) with a durable prefix.
+                        return Ok(Some((me, eng.state().entries(), eng.export_state(), true)));
+                    }
+                    if !is_victim && applied >= total {
+                        survivors_done.fetch_add(1, Ordering::SeqCst);
+                        let drain = Instant::now() + Duration::from_millis(50);
+                        while Instant::now() < drain {
+                            for d in host.poll(Duration::from_millis(1)).unwrap_or_default() {
+                                if let Some(op) = Op::decode(&d.payload) {
+                                    let _ = eng.deliver(d.msg_ts, &op)?;
+                                }
+                            }
+                        }
+                        return Ok(Some((me, eng.state().entries(), eng.export_state(), false)));
+                    }
+                    if started.elapsed() >= cfg.timeout {
+                        return Ok(Some((me, eng.state().entries(), eng.export_state(), false)));
+                    }
+                }
+            } else {
+                let c = me as u32;
+                for i in 0..cfg.ops_per_client {
+                    let op = Op::incr(c, i + 1, &format!("k{}", i % cfg.keys), 1);
+                    host.send(&replica_ids, &op.encode());
+                    let t = Instant::now() + Duration::from_micros(300);
+                    while Instant::now() < t {
+                        let _ = host.poll(Duration::from_micros(50));
+                    }
+                }
+                while survivors_done.load(Ordering::SeqCst) < n_survivors && started.elapsed() < cfg.timeout {
+                    let _ = host.poll(Duration::from_millis(1));
+                }
+                Ok(None)
+            }
+        }));
+    }
+
+    let mut survivor: Option<(Vec<(String, i64)>, Vec<u8>)> = None;
+    let mut victim_prefix: Vec<(String, i64)> = Vec::new();
+    for h in handles {
+        if let Some((_id, entries, export, crashed)) = h.join().unwrap()? {
+            if crashed {
+                victim_prefix = entries;
+            } else if survivor.is_none() {
+                survivor = Some((entries, export));
+            }
+        }
+    }
+    let (survivor_state, survivor_export) = survivor.expect("at least one survivor");
+    let expected = expected_state(cfg.clients, cfg.ops_per_client, cfg.keys);
+
+    // Victim recovers its durable prefix, then state-transfers from the survivor.
+    let mut veng = Engine::<KvStore>::recover(dir.join(format!("replica-{victim}")), cfg.snap_interval, false)?;
+    veng.import_state(&survivor_export)?;
+    let victim_caught_up = veng.state().entries();
+
+    let exp_map: std::collections::BTreeMap<_, _> = expected.iter().cloned().collect();
+    let victim_prefix_consistent = victim_prefix.iter().all(|(k, v)| exp_map.get(k).is_some_and(|e| v <= e));
+    let survivor_correct = survivor_state == expected;
+    let recovered_ok = victim_caught_up == survivor_state && survivor_correct;
+
+    Ok(CrashReport {
+        expected,
+        survivor_state,
+        victim_prefix,
+        victim_caught_up,
+        survivor_correct,
+        victim_prefix_consistent,
+        recovered_ok,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,6 +352,34 @@ mod tests {
         d.push(format!("ob-cluster-{}-{}-{}", tag, std::process::id(), n));
         let _ = std::fs::remove_dir_all(&d);
         d
+    }
+
+    #[test]
+    fn survivor_stays_correct_and_victim_recovers_after_a_replica_crash() {
+        // RQ3/RQ4 on the live fabric. 3 replicas; replica 1 crashes after 60 ops.
+        // The fabric excises it; survivors reach the exact expected state; the
+        // victim recovers a consistent prefix and catches up via state transfer.
+        let dir = tmpdir("crash");
+        let cfg = ClusterConfig {
+            replicas: 3,
+            clients: 2,
+            ops_per_client: 150,
+            keys: 8,
+            snap_interval: 32,
+            host: HostConfig {
+                // Excise a dead destination quickly so survivors' commit barrier
+                // resumes (still well above loopback scheduling jitter).
+                failure_timeout: Duration::from_millis(600),
+                ..ClusterConfig::default().host
+            },
+            timeout: Duration::from_secs(40),
+            ..Default::default()
+        };
+        let r = run_cluster_with_crash(&cfg, &dir, 1, 60).unwrap();
+        assert!(r.survivor_correct, "survivor wrong after crash: {:?} vs {:?}", r.survivor_state, r.expected);
+        assert!(r.victim_prefix_consistent, "victim prefix inconsistent: {:?}", r.victim_prefix);
+        assert!(r.recovered_ok, "victim did not recover+catch up: {:#?}", r);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

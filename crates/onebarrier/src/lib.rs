@@ -161,6 +161,24 @@ impl<S: StateMachine> Engine<S> {
     pub fn last_ts(&self) -> u64 {
         self.last_ts
     }
+
+    /// Export this engine's full state for a **state transfer** to a recovering
+    /// peer (snapshot bytes that, in deployment, travel over the fabric). Carries
+    /// the per-client high-water marks so exactly-once survives the transfer.
+    pub fn export_state(&self) -> Vec<u8> {
+        self.encode_snapshot()
+    }
+
+    /// Install a peer's exported state into this (recovering) engine: adopt its
+    /// state + high-water marks + horizon, persist it durably, and drop the now
+    /// superseded log. Used to catch a crash-recovered replica up to the live
+    /// cut after it has restored its own (stale) durable prefix.
+    pub fn import_state(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.load_snapshot(bytes);
+        self.dur.write_snapshot(bytes)?;
+        self.ops_since_snap = 0;
+        Ok(())
+    }
     pub fn dir(&self) -> &Path {
         &self.dir
     }
@@ -291,6 +309,50 @@ mod tests {
         ] {
             assert_eq!(Op::decode(&op.encode()), Some(op));
         }
+    }
+
+    #[test]
+    fn crash_recover_then_state_transfer_catches_up() {
+        // RQ3/RQ4 (engine level, deterministic): a replica crashes mid-stream,
+        // recovers its consistent pre-crash prefix from its own durable store,
+        // then catches up to the live cut via a state transfer from a survivor —
+        // and that caught-up state is itself durable across a second crash.
+        let dir_a = tmpdir("xfer-a");
+        let dir_b = tmpdir("xfer-b");
+        let ops: Vec<Op> =
+            (0..20).map(|i| Op::incr(1, i + 1, &format!("k{}", i % 4), 1)).collect();
+
+        // Survivor A applies the whole stream.
+        let mut a = Engine::<KvStore>::create(&dir_a, 8, false).unwrap();
+        for (i, op) in ops.iter().enumerate() {
+            a.deliver(ts((i as u64 + 1) * 10), op).unwrap();
+        }
+
+        // Victim B applies the first 12 ops, then crashes.
+        {
+            let mut b = Engine::<KvStore>::create(&dir_b, 8, false).unwrap();
+            for (i, op) in ops.iter().take(12).enumerate() {
+                b.deliver(ts((i as u64 + 1) * 10), op).unwrap();
+            }
+        }
+
+        // B recovers — to a *consistent prefix*, not corruption.
+        let mut b = Engine::<KvStore>::recover(&dir_b, 8, false).unwrap();
+        assert_eq!(
+            b.state(),
+            &reference_apply::<KvStore>(&ops[..12]),
+            "B recovered to its consistent pre-crash prefix"
+        );
+
+        // Catch up to the live cut via state transfer from the survivor.
+        b.import_state(&a.export_state()).unwrap();
+        assert_eq!(b.state(), a.state(), "B caught up to A via state transfer");
+        assert_eq!(b.state(), &reference_apply::<KvStore>(&ops));
+
+        // The transferred state is durable: B survives a second crash.
+        drop(b);
+        let b2 = Engine::<KvStore>::recover(&dir_b, 8, false).unwrap();
+        assert_eq!(b2.state(), a.state(), "transferred state durable across a 2nd crash");
     }
 
     #[test]
