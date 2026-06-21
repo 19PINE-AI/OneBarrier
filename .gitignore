@@ -9,3 +9,5 @@ Cargo.lock.bak
 
 # build artifacts
 *.so
+spec/states/
+spec/*_TTrace_*
