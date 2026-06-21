@@ -1,9 +1,9 @@
-//! The replicated state machine under test: a tiny `key → i64` store with an
-//! idempotent op (`Set`) and a non-idempotent one (`Incr`). The Set-vs-Incr
-//! distinction is the money microbenchmark for **exactly-once output
-//! suppression on replay** (docs/PLAN.md §6): a naive log-replay double-applies
-//! `Incr` after a crash; OneBarrier suppresses it via the per-client high-water
-//! mark that the durable snapshot carries across recovery.
+//! The replicated state machine under test: a `key → bytes` store with Redis
+//! semantics — `Set` (idempotent), `Incr` (non-idempotent, parses the value as
+//! an integer), `Del`, `Get`. `Set`/`Incr` is the money microbenchmark for
+//! exactly-once output suppression on replay (docs/PLAN.md §6): a naive
+//! log-replay double-applies `Incr` after a crash; OneBarrier suppresses it via
+//! the per-client high-water mark carried in the durable snapshot.
 
 use std::collections::BTreeMap;
 
@@ -18,51 +18,69 @@ pub struct Op {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpKind {
-    /// Idempotent: bucket 2 in the external-effect taxonomy.
-    Set(String, i64),
+    /// Idempotent write of an opaque value (bucket 2 in the effect taxonomy).
+    Set(String, Vec<u8>),
     /// Non-idempotent: a duplicate replay double-counts unless suppressed.
     Incr(String, i64),
+    /// Delete a key (idempotent).
+    Del(String),
     /// Read-only.
     Get(String),
 }
 
-/// The result handed back to the caller (and, in the networked node, the value
-/// that would be externalized — hence subject to output suppression on replay).
+/// The result handed back to the caller (and, in the server, the value that
+/// would be externalized — hence subject to output suppression on replay).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Output {
     Ok,
+    /// Integer result (INCR's new value, DEL's count).
     Value(Option<i64>),
+    /// Bytes result (GET).
+    Bytes(Option<Vec<u8>>),
     /// A duplicate that was recognized and neither re-applied nor re-emitted.
     Suppressed,
 }
 
 impl Op {
+    /// Set an integer value (stored as text, like Redis).
     pub fn set(client: u32, seq: u64, key: &str, val: i64) -> Self {
-        Self { client, seq, kind: OpKind::Set(key.to_string(), val) }
+        Self::set_bytes(client, seq, key, val.to_string().as_bytes())
+    }
+    pub fn set_bytes(client: u32, seq: u64, key: &str, val: &[u8]) -> Self {
+        Self { client, seq, kind: OpKind::Set(key.to_string(), val.to_vec()) }
     }
     pub fn incr(client: u32, seq: u64, key: &str, delta: i64) -> Self {
         Self { client, seq, kind: OpKind::Incr(key.to_string(), delta) }
+    }
+    pub fn del(client: u32, seq: u64, key: &str) -> Self {
+        Self { client, seq, kind: OpKind::Del(key.to_string()) }
     }
     pub fn get(client: u32, seq: u64, key: &str) -> Self {
         Self { client, seq, kind: OpKind::Get(key.to_string()) }
     }
 
-    /// Wire/log encoding: `tag(1) client(4) seq(8) keylen(2) key val(8?)`.
+    /// Wire/log encoding: `tag(1) client(4) seq(8) keylen(2) key [vallen(4) val | delta(8)]`.
     pub fn encode(&self) -> Vec<u8> {
-        let (tag, key, val): (u8, &str, Option<i64>) = match &self.kind {
-            OpKind::Set(k, v) => (0, k, Some(*v)),
-            OpKind::Incr(k, v) => (1, k, Some(*v)),
-            OpKind::Get(k) => (2, k, None),
+        let mut o = Vec::new();
+        let (tag, key): (u8, &str) = match &self.kind {
+            OpKind::Set(k, _) => (0, k),
+            OpKind::Incr(k, _) => (1, k),
+            OpKind::Get(k) => (2, k),
+            OpKind::Del(k) => (3, k),
         };
         let kb = key.as_bytes();
-        let mut o = Vec::with_capacity(15 + kb.len() + 8);
         o.push(tag);
         o.extend_from_slice(&self.client.to_le_bytes());
         o.extend_from_slice(&self.seq.to_le_bytes());
         o.extend_from_slice(&(u16::try_from(kb.len()).unwrap_or(u16::MAX)).to_le_bytes());
         o.extend_from_slice(kb);
-        if let Some(v) = val {
-            o.extend_from_slice(&v.to_le_bytes());
+        match &self.kind {
+            OpKind::Set(_, v) => {
+                o.extend_from_slice(&(u32::try_from(v.len()).unwrap_or(u32::MAX)).to_le_bytes());
+                o.extend_from_slice(v);
+            }
+            OpKind::Incr(_, d) => o.extend_from_slice(&d.to_le_bytes()),
+            OpKind::Get(_) | OpKind::Del(_) => {}
         }
         o
     }
@@ -75,9 +93,13 @@ impl Op {
         let klen = r.u16()? as usize;
         let key = String::from_utf8(r.bytes(klen)?.to_vec()).ok()?;
         let kind = match tag {
-            0 => OpKind::Set(key, r.i64()?),
+            0 => {
+                let vlen = r.u32()? as usize;
+                OpKind::Set(key, r.bytes(vlen)?.to_vec())
+            }
             1 => OpKind::Incr(key, r.i64()?),
             2 => OpKind::Get(key),
+            3 => OpKind::Del(key),
             _ => return None,
         };
         Some(Self { client, seq, kind })
@@ -93,15 +115,19 @@ pub trait StateMachine: Default {
     fn restore(bytes: &[u8]) -> Self;
 }
 
-/// The tiny KV store.
+/// The `key → bytes` store with Redis semantics.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct KvStore {
-    map: BTreeMap<String, i64>,
+    map: BTreeMap<String, Vec<u8>>,
 }
 
 impl KvStore {
-    pub fn get(&self, key: &str) -> Option<i64> {
-        self.map.get(key).copied()
+    pub fn get_bytes(&self, key: &str) -> Option<&[u8]> {
+        self.map.get(key).map(Vec::as_slice)
+    }
+    /// Parse a key's value as an integer (0 / None semantics for INCR-style use).
+    pub fn get_int(&self, key: &str) -> Option<i64> {
+        self.map.get(key).and_then(|v| std::str::from_utf8(v).ok()?.trim().parse().ok())
     }
     pub fn len(&self) -> usize {
         self.map.len()
@@ -109,9 +135,13 @@ impl KvStore {
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
-    /// Full contents as a sorted vector — for cross-replica convergence checks.
+    /// Integer view of the store, sorted — for cross-replica convergence checks
+    /// over integer (INCR) workloads.
     pub fn entries(&self) -> Vec<(String, i64)> {
-        self.map.iter().map(|(k, v)| (k.clone(), *v)).collect()
+        self.map
+            .iter()
+            .filter_map(|(k, v)| Some((k.clone(), std::str::from_utf8(v).ok()?.trim().parse().ok()?)))
+            .collect()
     }
 }
 
@@ -119,15 +149,21 @@ impl StateMachine for KvStore {
     fn apply(&mut self, op: &Op) -> Output {
         match &op.kind {
             OpKind::Set(k, v) => {
-                self.map.insert(k.clone(), *v);
+                self.map.insert(k.clone(), v.clone());
                 Output::Ok
             }
             OpKind::Incr(k, d) => {
-                let e = self.map.entry(k.clone()).or_insert(0);
-                *e += *d;
-                Output::Value(Some(*e))
+                let cur: i64 = self
+                    .map
+                    .get(k)
+                    .and_then(|v| std::str::from_utf8(v).ok()?.trim().parse().ok())
+                    .unwrap_or(0);
+                let next = cur + *d;
+                self.map.insert(k.clone(), next.to_string().into_bytes());
+                Output::Value(Some(next))
             }
-            OpKind::Get(k) => Output::Value(self.map.get(k).copied()),
+            OpKind::Del(k) => Output::Value(Some(i64::from(self.map.remove(k).is_some()))),
+            OpKind::Get(k) => Output::Bytes(self.map.get(k).cloned()),
         }
     }
 
@@ -138,7 +174,8 @@ impl StateMachine for KvStore {
             let kb = k.as_bytes();
             o.extend_from_slice(&(u16::try_from(kb.len()).unwrap_or(u16::MAX)).to_le_bytes());
             o.extend_from_slice(kb);
-            o.extend_from_slice(&v.to_le_bytes());
+            o.extend_from_slice(&(u32::try_from(v.len()).unwrap_or(u32::MAX)).to_le_bytes());
+            o.extend_from_slice(v);
         }
         o
     }
@@ -150,9 +187,10 @@ impl StateMachine for KvStore {
             for _ in 0..n {
                 let Some(klen) = r.u16() else { break };
                 let Some(kb) = r.bytes(klen as usize) else { break };
-                let Some(v) = r.i64() else { break };
+                let Some(vlen) = r.u32() else { break };
+                let Some(vb) = r.bytes(vlen as usize) else { break };
                 if let Ok(k) = String::from_utf8(kb.to_vec()) {
-                    map.insert(k, v);
+                    map.insert(k, vb.to_vec());
                 }
             }
         }

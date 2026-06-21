@@ -16,6 +16,8 @@
 pub mod bench;
 pub mod cluster;
 pub mod durable;
+pub mod resp;
+pub mod server;
 pub mod state;
 
 use std::collections::BTreeMap;
@@ -269,8 +271,8 @@ mod tests {
         let e = Engine::<KvStore>::recover(&dir, 2, false).unwrap();
         let reference = reference_apply::<KvStore>(&ops);
         assert_eq!(e.state(), &reference, "post-recovery state must equal serial reference");
-        assert_eq!(e.state().get("a"), Some(16));
-        assert_eq!(e.state().get("b"), Some(99));
+        assert_eq!(e.state().get_int("a"), Some(16));
+        assert_eq!(e.state().get_int("b"), Some(99));
     }
 
     #[test]
@@ -284,10 +286,10 @@ mod tests {
         } // crash before snapshot
 
         let mut e = Engine::<KvStore>::recover(&dir, 100, false).unwrap();
-        assert_eq!(e.state().get("x"), Some(5), "replay reconstructs x=5, not 10");
+        assert_eq!(e.state().get_int("x"), Some(5), "replay reconstructs x=5, not 10");
         // The fabric re-delivers the same op (same client/seq) post-recovery:
         assert_eq!(e.deliver(ts(10), &Op::incr(1, 1, "x", 5)).unwrap(), Output::Suppressed);
-        assert_eq!(e.state().get("x"), Some(5), "duplicate INCR suppressed — not double-counted");
+        assert_eq!(e.state().get_int("x"), Some(5), "duplicate INCR suppressed — not double-counted");
         assert_eq!(e.stats.suppressed, 1);
     }
 
@@ -297,7 +299,7 @@ mod tests {
         let mut e = Engine::<KvStore>::create(&dir, 100, false).unwrap();
         assert_eq!(e.deliver(ts(10), &Op::set(7, 1, "k", 42)).unwrap(), Output::Ok);
         assert_eq!(e.deliver(ts(20), &Op::set(7, 1, "k", 42)).unwrap(), Output::Suppressed);
-        assert_eq!(e.state().get("k"), Some(42));
+        assert_eq!(e.state().get_int("k"), Some(42));
     }
 
     #[test]
@@ -374,6 +376,6 @@ mod tests {
             }
         }
         let e = Engine::<KvStore>::recover(&dir, 100, false).unwrap();
-        assert_eq!(e.state().get("n"), Some(3), "idempotent recovery: n=3, not 6");
+        assert_eq!(e.state().get_int("n"), Some(3), "idempotent recovery: n=3, not 6");
     }
 }
