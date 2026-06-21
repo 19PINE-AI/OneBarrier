@@ -12,6 +12,29 @@ fix exactly that.
 
 ---
 
+## Status — simulated coverage (2026-06-21)
+
+No real RDMA testbed is available, so the hardware experiments are done in
+**local simulation** (latency model from the 1Pipe paper) + **formal verification**
++ **real measurement** where the sandbox allows. All reproduced in `STATUS.md`.
+
+| Plan item | How | Result |
+|---|---|---|
+| **§5 formal correctness** | TLA+ + TLC (both repos) | ✅ 1Pipe total order (3.5M states); OneBarrier exactly-once + no-lost-ack |
+| **GATE A — RQ2 @ RDMA** | discrete-event sim (`ob-sim`) | ✅ FT-overlap tail = reliable-1Pipe baseline at every load; fsync collapses |
+| **exp #2 tail latency** | `ob-sim` load sweep | ✅ FT-overlap p99.9 tracks baseline; fsync tail collapses |
+| **exp #3 competitors** | model + sim (`ob-compare`) | ✅ OB = best latency at lowest CPU; dwarfs Remus |
+| **exp #5 nondeterminism** | real `obpreload` measurement | ✅ residual = ~5.8 wall-clock reads/req, zero RNG/other |
+| **exp #6 recovery + livelock** | recovery model (`ob-recovery`) | ✅ converge / livelock / backpressure characterized |
+| **GATE B — real libOS on unmodified app** | `obpreload` + `ob-replay` | ◑ scoped: transparent record-replay on stock redis; time/RNG/thread virtualization is the remaining build |
+| exp #7 Elle/Knossos | `ob-jepsen` (real kill -9) | ◑ acked-set checker done; full linearizability oracle remains |
+| exp #4 diverse unmodified apps on libOS | — | ☐ needs the full libOS (GATE B build) |
+| real RDMA/P4 measurement | — | ☐ needs hardware (sim stands in) |
+
+The make-or-break **GATE A passes in simulation**; the remaining ☐ items need the
+real testbed or the full libOS build (§2), which simulation explicitly stands in
+for and labels as such.
+
 ## 0. The gap, named
 
 | Today (reproduction) | Strong paper (real) |
