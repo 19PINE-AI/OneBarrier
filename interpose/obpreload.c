@@ -56,6 +56,16 @@ static unsigned char *rep_buf = NULL;
 static size_t rep_len = 0, rep_cursor = 0;
 static long rep_diverged = 0;
 static int ob_mode = 0; /* 0 none, 1 record, 2 replay */
+
+/* Virtual clock (OB_VCLOCK): deterministic time = base + ticks; ticks advance by
+ * a fixed delta on each socket read (a deterministic input event), so time reads
+ * are count-independent and timer-driven reads no longer desync replay. base is
+ * captured at the live run start and persisted; the replay run reconstructs the
+ * same virtual time for the same inputs -> byte-identical time-dependent output. */
+#define VCLOCK_TICK_NS 1000000LL
+static long long vclock_base_ns = 0;
+static long vclock_ticks = 0;
+static int vclock_on = 0;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void nd_dump(void) {
@@ -162,6 +172,7 @@ static void capture(int fd, const void *buf, ssize_t n) {
     if (n <= 0 || fd < 0 || fd >= MAXFD || !is_conn[fd]) return;
     pthread_mutex_lock(&lock);
     nd_requests++;
+    if (vclock_on) __atomic_fetch_add(&vclock_ticks, VCLOCK_TICK_NS, __ATOMIC_RELAXED);
     if (cap) {
         uint32_t cid = conn_id_of[fd];
         uint32_t len = (uint32_t)n;
@@ -178,14 +189,36 @@ static void capture(int fd, const void *buf, ssize_t n) {
  * init trap: the interceptors below NEVER call dlsym themselves — if the real
  * symbol isn't resolved yet (a call during ld.so init, before this constructor
  * runs) they fall back to the raw syscall.  No recursion, no TLS. */
+static void vclock_init(void) {
+    const char *p = getenv("OB_VCLOCK");
+    if (!p) return;
+    FILE *f = fopen(p, "rb");
+    if (f) {
+        if (fread(&vclock_base_ns, 8, 1, f) != 1) vclock_base_ns = 0;
+        fclose(f);
+    } else {
+        struct timespec ts = {0, 0};
+        if (real_clock_gettime) real_clock_gettime(CLOCK_REALTIME, &ts);
+        vclock_base_ns = (long long)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+        FILE *w = fopen(p, "wb");
+        if (w) { fwrite(&vclock_base_ns, 8, 1, w); fclose(w); }
+    }
+    vclock_on = 1;
+}
 __attribute__((constructor)) static void ob_ctor(void) {
     ob_init();
     rr_init();
+    vclock_init();
     atexit(nd_dump);
 }
 
 int gettimeofday(struct timeval *tv, void *tz) {
     long c = __atomic_add_fetch(&nd_gettimeofday, 1, __ATOMIC_RELAXED);
+    if (vclock_on) {
+        long long t = vclock_base_ns + __atomic_load_n(&vclock_ticks, __ATOMIC_RELAXED);
+        if (tv) { tv->tv_sec = t / 1000000000LL; tv->tv_usec = (t % 1000000000LL) / 1000; }
+        return 0;
+    }
     if (ob_mode == 2 && rr_replay_fixed(1, tv, sizeof(*tv))) return 0;
     int r = real_gettimeofday ? real_gettimeofday(tv, tz) : (int)syscall(SYS_gettimeofday, tv, tz);
     if (ob_mode == 1) rr_record_fixed(1, tv, sizeof(*tv));
@@ -194,6 +227,11 @@ int gettimeofday(struct timeval *tv, void *tz) {
 }
 int clock_gettime(clockid_t id, struct timespec *ts) {
     long c = __atomic_add_fetch(&nd_clock_gettime, 1, __ATOMIC_RELAXED);
+    if (vclock_on) {
+        long long t = vclock_base_ns + __atomic_load_n(&vclock_ticks, __ATOMIC_RELAXED);
+        if (ts) { ts->tv_sec = t / 1000000000LL; ts->tv_nsec = t % 1000000000LL; }
+        return 0;
+    }
     if (ob_mode == 2 && rr_replay_fixed(2, ts, sizeof(*ts))) return 0;
     int r = real_clock_gettime ? real_clock_gettime(id, ts) : (int)syscall(SYS_clock_gettime, id, ts);
     if (ob_mode == 1) rr_record_fixed(2, ts, sizeof(*ts));
@@ -202,6 +240,11 @@ int clock_gettime(clockid_t id, struct timespec *ts) {
 }
 time_t time(time_t *t) {
     __atomic_fetch_add(&nd_time, 1, __ATOMIC_RELAXED);
+    if (vclock_on) {
+        time_t v = (time_t)((vclock_base_ns + __atomic_load_n(&vclock_ticks, __ATOMIC_RELAXED)) / 1000000000LL);
+        if (t) *t = v;
+        return v;
+    }
     time_t val;
     if (ob_mode == 2 && rr_replay_fixed(4, &val, sizeof(val))) {
         if (t) *t = val;

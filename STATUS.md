@@ -428,7 +428,30 @@ despite the 4-second gap — *deterministic time recovery of an unmodified app*,
 transparent-FT vision realized for the time dimension. A control run (real time,
 no replay) differs, proving the nondeterminism that virtualization removes.
 
-### Multi-app finding: where time-virtualization-alone suffices (the boundary)
+### Virtual clock CLOSES the timer-driven boundary (redis byte-identical) — 2026-06-21
+
+The `OB_VCLOCK` **virtual clock** replaces value-replay: time = `base + ticks`,
+where `ticks` advance by a fixed delta on each **socket read** (a deterministic
+input event), so every time read is **count-independent** — timer-driven reads
+(redis `serverCron`) no longer desync. `base` is captured at the live run and
+persisted; replay reconstructs the same virtual time for the same inputs.
+
+`bash /tmp/vclock_redis2.sh` — redis `TIME` under the virtual clock, live then
+replay (fresh server, **after a real-time gap**), symmetric driving:
+
+```
+LIVE:   1782053569.269446 .270446 .271446 .272446 .273446 .274446
+REPLAY: 1782053569.269446 .270446 .271446 .272446 .273446 .274446   <- BYTE-IDENTICAL
+```
+
+**Result:** redis `TIME` is now **byte-identical across recovery** — the seconds
+ignore the real-time gap (replay returns the live `base`, not current time), and
+the microseconds advance deterministically (1 ms/event). The virtual clock
+**fixes the divergence the value-replay approach hit** on timer-driven apps, and
+is app-agnostic (same mechanism applies to memcached/nginx/node). The earlier
+`+1`-tick offset was an asymmetric-ping artifact, eliminated by symmetric driving.
+
+### Multi-app finding (superseded by the virtual clock above): the value-replay boundary
 
 Applying the same record/replay to **redis** (`TIME` command, the analog of
 `Date.now()`) reveals the precise boundary. Under replay, redis's `TIME` returned
