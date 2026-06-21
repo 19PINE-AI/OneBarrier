@@ -428,6 +428,103 @@ pub fn bench_ordering(threads: usize, ops_per_thread: u64) -> (OrderResult, Orde
     )
 }
 
+// ---------------------------------------------------------------------------
+// M4 — FT order-establishment baselines: OneBarrier vs LLFT vs HyCoR
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct FtBaseline {
+    pub mode: String,
+    pub threads: usize,
+    pub ops_per_sec: f64,
+}
+
+/// M4 head-to-head: how each transparent-FT approach establishes a *replayable*
+/// total order, and what it costs per op under `threads` concurrent producers.
+///   * **OneBarrier** — the fabric supplies the order; the replica only applies +
+///     appends the op (no per-op ordering metadata, no sequencer).
+///   * **LLFT** — a host-level virtual-time *sequencer* assigns the order; every
+///     op serializes through it (the cost the in-network fabric removes).
+///   * **HyCoR** — logs the receipt *non-determinism* per op (an extra ordering
+///     record) so replay can reconstruct the order, plus applies + appends.
+/// Same apply + op-append work in all three; the delta is purely the ordering
+/// mechanism. (Software model on the reproduction; the real fabric advantage is
+/// 1Pipe's measured in-network result.)
+pub fn bench_ft_baselines(dir: &std::path::Path, threads: usize, ops_per_thread: u64) -> Vec<FtBaseline> {
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    let total = (threads as u64 * ops_per_thread) as f64;
+
+    let run_per_thread = |label: &str, body: Arc<dyn Fn(usize) + Send + Sync>| -> FtBaseline {
+        let t0 = Instant::now();
+        let handles: Vec<_> = (0..threads)
+            .map(|tid| {
+                let body = Arc::clone(&body);
+                thread::spawn(move || body(tid))
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        FtBaseline { mode: label.into(), threads, ops_per_sec: total / t0.elapsed().as_secs_f64() }
+    };
+
+    let base = dir.to_path_buf();
+
+    // OneBarrier: apply + append op (order is the fabric's; nothing extra).
+    let ob = {
+        let base = base.clone();
+        run_per_thread("OneBarrier (fabric order)", Arc::new(move |tid: usize| {
+            let d = base.join(format!("ob-{tid}"));
+            let _ = std::fs::remove_dir_all(&d);
+            let mut e = crate::Engine::<crate::KvStore>::create(&d, 1_000_000, false).unwrap();
+            for i in 0..ops_per_thread {
+                let op = crate::Op::incr(1, i + 1, "k", 1);
+                e.deliver(onepipe_core::timestamp::Timestamp::from_nanos(i + 1), &op).unwrap();
+            }
+        }))
+    };
+
+    // LLFT: every op serializes through one host virtual-time sequencer.
+    let llft = {
+        let base = base.clone();
+        let seq = Arc::new(Mutex::new(0u64));
+        run_per_thread("LLFT (host sequencer)", Arc::new(move |tid: usize| {
+            let d = base.join(format!("llft-{tid}"));
+            let _ = std::fs::remove_dir_all(&d);
+            let mut e = crate::Engine::<crate::KvStore>::create(&d, 1_000_000, false).unwrap();
+            for i in 0..ops_per_thread {
+                {
+                    let mut g = seq.lock().unwrap();
+                    *g += 1; // serialization point: assign global virtual time
+                }
+                let op = crate::Op::incr(1, i + 1, "k", 1);
+                e.deliver(onepipe_core::timestamp::Timestamp::from_nanos(i + 1), &op).unwrap();
+            }
+        }))
+    };
+
+    // HyCoR: apply + append op + append a separate per-op order/nondeterminism record.
+    let hycor = {
+        let base = base.clone();
+        run_per_thread("HyCoR (nondeterminism log)", Arc::new(move |tid: usize| {
+            let d = base.join(format!("hycor-{tid}"));
+            let _ = std::fs::remove_dir_all(&d);
+            let mut e = crate::Engine::<crate::KvStore>::create(&d, 1_000_000, false).unwrap();
+            let mut orderlog = crate::durable::Durable::open(base.join(format!("hycor-ord-{tid}")), false).unwrap();
+            for i in 0..ops_per_thread {
+                let op = crate::Op::incr(1, i + 1, "k", 1);
+                e.deliver(onepipe_core::timestamp::Timestamp::from_nanos(i + 1), &op).unwrap();
+                // The order-log OneBarrier does NOT keep: per-op receipt order.
+                orderlog.append(i + 1, &(i + 1).to_le_bytes()).unwrap();
+            }
+        }))
+    };
+
+    let _ = std::fs::remove_dir_all(dir);
+    vec![ob, hycor, llft]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,6 +536,41 @@ mod tests {
         d.push(format!("ob-bench-{}-{}-{}", tag, std::process::id(), k));
         let _ = std::fs::remove_dir_all(&d);
         d
+    }
+
+    #[test]
+    fn onebarrier_writes_no_order_log_unlike_hycor() {
+        // Deterministic structural result (throughput on a shared host is noisy):
+        // OneBarrier persists only the op-log; HyCoR additionally persists a
+        // per-op order/non-determinism record, so it writes strictly more durable
+        // bytes for the same workload. That extra log is the overhead the fabric's
+        // total order removes.
+        let dir = tmpdir("ftbytes");
+        let ops = 5_000u64;
+
+        let ob_dir = dir.join("ob");
+        let mut e = crate::Engine::<crate::KvStore>::create(&ob_dir, 1_000_000, false).unwrap();
+        for i in 0..ops {
+            e.deliver(onepipe_core::timestamp::Timestamp::from_nanos(i + 1), &crate::Op::incr(1, i + 1, "k", 1)).unwrap();
+        }
+        drop(e);
+        let ob_bytes = std::fs::metadata(ob_dir.join("oplog")).map(|m| m.len()).unwrap_or(0);
+
+        let hy_dir = dir.join("hy");
+        let mut e = crate::Engine::<crate::KvStore>::create(&hy_dir, 1_000_000, false).unwrap();
+        let mut orderlog = crate::durable::Durable::open(hy_dir.join("ord"), false).unwrap();
+        for i in 0..ops {
+            e.deliver(onepipe_core::timestamp::Timestamp::from_nanos(i + 1), &crate::Op::incr(1, i + 1, "k", 1)).unwrap();
+            orderlog.append(i + 1, &(i + 1).to_le_bytes()).unwrap();
+        }
+        drop(e);
+        let hy_op = std::fs::metadata(hy_dir.join("oplog")).map(|m| m.len()).unwrap_or(0);
+        let hy_ord = std::fs::metadata(hy_dir.join("ord").join("oplog")).map(|m| m.len()).unwrap_or(0);
+
+        assert_eq!(ob_bytes, hy_op, "same op-log");
+        assert!(hy_ord > 0, "HyCoR keeps a non-empty order-log");
+        assert!(hy_op + hy_ord > ob_bytes, "HyCoR writes strictly more durable bytes than OneBarrier");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

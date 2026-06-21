@@ -12,7 +12,7 @@ as the autonomous research proceeds.
 | M1 | OneBarrier cluster over the live 1Pipe `ReliableHost` fabric: clients scatter ops, replicas apply the totally-ordered stream, converge | **done** ✅ |
 | M2 | RQ2 harness — output-commit latency decomposition + durability-tier comparison (in-fabric/mem vs fsync) on the live fabric | **done** ✅ |
 | M3 | Apps (production, end-to-end) on a shared `KvService` — durable, crash-recoverable, real clients: RESP (Redis), Memcached, HTTP/1.1 REST, transactional store (atomic txns), pub/sub streaming log | **5/5 done** ✅ |
-| M4 | In-harness baselines | **partial**: real-Redis (no-FT / AOF-everysec / AOF-always) RQ1, central-sequencer RQ7, active-SMR RQ5 done; LLFT/HyCoR host-virtual-time + nondeterminism-logging modes remain |
+| M4 | In-harness baselines: real-Redis (RQ1), active-SMR (RQ5), central-sequencer (RQ7), **+ LLFT (host sequencer) & HyCoR (nondeterminism-log) head-to-head** | **done** ✅ |
 | M5 | Correctness-under-fault + sweeps | **partial**: crash-injection correctness (engine + live fabric) RQ3/RQ4, scale RQ6, CPU RQ5, interval RQ8 done; a broad concurrent-fault linearizability checker remains |
 | TB | Track B — transparent interception: `LD_PRELOAD` shim records an **unmodified** binary; `ob-replay` rebuilds state. Demoed on stock `redis-server` | **done** ✅ (scoped) |
 
@@ -208,6 +208,28 @@ this is a software model (mutex vs lock-free) and the absolute speedups are
 The qualitative result — sequencer bottlenecks, fabric scales — is what transfers,
 and it is the empirical basis for "the fabric removes the order-coordination cost."
 Guarded by `bench::fabric_ordering_scales_past_central_sequencer`.
+
+### M4 — LLFT / HyCoR head-to-head (2026-06-21)
+
+`cargo run --release -p onebarrier --bin ob-baselines` — 50 000 ops/producer,
+same apply+append work; the delta is the ordering mechanism:
+
+| producers | OneBarrier ops/s | HyCoR ops/s | LLFT ops/s |
+|----------:|-----------------:|------------:|-----------:|
+| 1 | 2 851 323 | 1 270 511 | 2 060 723 |
+| 2 | 4 954 284 | 2 867 979 | 5 136 660 |
+| 4 | 6 116 304 | 4 338 055 | 5 637 582 |
+| 8 | 12 112 494 | 7 889 508 | 10 343 679 |
+
+**Read-out:** **OneBarrier consistently beats HyCoR (1.5–2.2×)** — HyCoR keeps a
+per-op non-determinism/order log that OneBarrier omits (the fabric supplies the
+order). A *deterministic* test (`onebarrier_writes_no_order_log_unlike_hycor`)
+proves HyCoR writes strictly more durable bytes for the same workload. **Honest
+note on LLFT:** its host-sequencer cost is *masked* here by the dominant
+apply+append work (it sometimes matches OneBarrier at the engine level); the
+sequencer cost is **isolated and dramatic in RQ7** (`ob-order`, where ordering is
+the only work). Together M4 + RQ7 bracket the contribution: the order-log
+(HyCoR) and the sequencer (LLFT) are both costs OneBarrier avoids via the fabric.
 
 ## Claims ledger (RQ → evidence)
 
