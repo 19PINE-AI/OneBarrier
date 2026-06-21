@@ -77,3 +77,7 @@ path = "src/bin/ob_sim.rs"
 [[bin]]
 name = "ob-compare"
 path = "src/bin/ob_compare.rs"
+
+[[bin]]
+name = "ob-recovery"
+path = "src/bin/ob_recovery.rs"

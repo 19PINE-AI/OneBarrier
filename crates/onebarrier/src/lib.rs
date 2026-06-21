@@ -18,6 +18,7 @@ pub mod cluster;
 pub mod durable;
 pub mod http;
 pub mod memcache;
+pub mod recovery;
 pub mod resp;
 pub mod server;
 pub mod sim;

@@ -307,6 +307,26 @@ costs that also lower their throughput ceiling; OneBarrier's durability is *off*
 the executor path. *Models, not reimplementations — clearly labelled; the real
 head-to-head needs the actual systems on RDMA (PAPER-PLAN exp #3).*
 
+### Recovery at scale + the livelock regime (SIMULATED) — 2026-06-21
+
+`cargo run --release -p onebarrier --bin ob-recovery` — recovery time vs live
+load (replay capacity 4 ops/µs; 1Pipe detection + the catch-up model):
+
+| live ops/µs | recovery (plain) | recovery (+backpressure) |
+|------------:|------------------|--------------------------|
+| 1.0 | 1773 µs | 1163 µs |
+| 3.0 | 10306 µs | 2626 µs |
+| 3.8 | 61506 µs | 3601 µs |
+| 5.0 | **LIVELOCK** | 6039 µs |
+| 7.0 | **LIVELOCK** | 23106 µs |
+
+**Read-out:** recovery is fast while replay outruns the live stream
+(`s = R_replay/R_live > 1`); at sustained peak load it **livelocks** (the
+red-team's finding), and the fabric's **barrier-hold backpressure** (throttle
+senders to the recovering node) restores convergence at every load. Absolute
+recovery is sub-ms to tens-of-ms — vs Redis Cluster detection ~3.3 s and Flink
+restore a minute+. Guarded by `recovery::converges_below_capacity_and_livelocks_above`.
+
 ## Claims ledger (RQ → evidence)
 
 | RQ | Claim | Evidence | State |
