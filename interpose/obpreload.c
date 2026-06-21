@@ -50,21 +50,83 @@ static time_t (*real_time)(time_t *) = NULL;
 static long nd_requests = 0, nd_gettimeofday = 0, nd_clock_gettime = 0,
            nd_getrandom = 0, nd_time = 0;
 
+/* record/replay state (see the rr_* section below) */
+static FILE *rec_fp = NULL;
+static unsigned char *rep_buf = NULL;
+static size_t rep_len = 0, rep_cursor = 0;
+static long rep_diverged = 0;
+static int ob_mode = 0; /* 0 none, 1 record, 2 replay */
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+
 static void nd_dump(void) {
     const char *path = getenv("OB_NDSTATS");
     if (!path) return;
     FILE *f = fopen(path, "w");
     if (!f) return;
-    fprintf(f, "requests %ld\ngettimeofday %ld\nclock_gettime %ld\ngetrandom %ld\ntime %ld\n",
-            nd_requests, nd_gettimeofday, nd_clock_gettime, nd_getrandom, nd_time);
+    fprintf(f, "requests %ld\ngettimeofday %ld\nclock_gettime %ld\ngetrandom %ld\ntime %ld\nmode %d\nreplay_diverged %ld\n",
+            nd_requests, nd_gettimeofday, nd_clock_gettime, nd_getrandom, nd_time, ob_mode, rep_diverged);
     fclose(f);
+    if (rec_fp) fflush(rec_fp); /* keep the record durable across shutdown */
+}
+
+/* ---- record/replay of nondeterministic returns (time virtualization) ----
+ * RECORD mode (OB_RECORD): append every time/random RESULT to a log.
+ * REPLAY mode (OB_REPLAY): return the recorded results in order, so an
+ * unmodified app re-executing the same inputs produces byte-identical output
+ * (e.g. matching HTTP Date headers) — deterministic recovery.
+ * Entry format: [u8 type][payload]; for fixed types payload is the result
+ * struct, for getrandom it is [u32 len][len bytes]. */
+
+static void rr_init(void) {
+    const char *rep = getenv("OB_REPLAY");
+    const char *rec = getenv("OB_RECORD");
+    if (rep) {
+        FILE *f = fopen(rep, "rb");
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            long n = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            if (n > 0 && (rep_buf = malloc((size_t)n)) && fread(rep_buf, 1, (size_t)n, f) == (size_t)n)
+                rep_len = (size_t)n;
+            fclose(f);
+            ob_mode = 2;
+        }
+    } else if (rec) {
+        rec_fp = fopen(rec, "wb");
+        if (rec_fp) {
+            setvbuf(rec_fp, NULL, _IOFBF, 1 << 16);
+            ob_mode = 1;
+        }
+    }
+}
+
+static void rr_record_fixed(unsigned char type, const void *p, size_t len) {
+    pthread_mutex_lock(&lock);
+    if (rec_fp) {
+        fputc(type, rec_fp);
+        fwrite(p, 1, len, rec_fp);
+    }
+    pthread_mutex_unlock(&lock);
+}
+/* Replay a fixed-size entry of `type` into `p`. Returns 1 if replayed. */
+static int rr_replay_fixed(unsigned char type, void *p, size_t len) {
+    int ok = 0;
+    pthread_mutex_lock(&lock);
+    if (rep_cursor + 1 + len <= rep_len && rep_buf[rep_cursor] == type) {
+        memcpy(p, rep_buf + rep_cursor + 1, len);
+        rep_cursor += 1 + len;
+        ok = 1;
+    } else {
+        rep_diverged++;
+    }
+    pthread_mutex_unlock(&lock);
+    return ok;
 }
 
 static unsigned char is_conn[MAXFD];   /* fd -> accepted server connection?     */
 static uint32_t conn_id_of[MAXFD];     /* fd -> stable capture connection id     */
 static FILE *cap = NULL;
 static uint32_t next_conn_id = 1;
-static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void ob_init(void) {
     if (!real_read)    real_read    = dlsym(RTLD_NEXT, "read");
@@ -114,33 +176,69 @@ static void capture(int fd, const void *buf, ssize_t n) {
  * init trap: the interceptors below NEVER call dlsym themselves — if the real
  * symbol isn't resolved yet (a call during ld.so init, before this constructor
  * runs) they fall back to the raw syscall.  No recursion, no TLS. */
-__attribute__((constructor)) static void ob_ctor(void) { ob_init(); nd_dump(); }
+__attribute__((constructor)) static void ob_ctor(void) {
+    ob_init();
+    rr_init();
+    atexit(nd_dump);
+}
 
 int gettimeofday(struct timeval *tv, void *tz) {
     long c = __atomic_add_fetch(&nd_gettimeofday, 1, __ATOMIC_RELAXED);
-    if (real_gettimeofday) {
-        if ((c % 50000) == 0) nd_dump(); /* periodic dump even for non-socket apps */
-        return real_gettimeofday(tv, tz);
-    }
-    return syscall(SYS_gettimeofday, tv, tz);
+    if (ob_mode == 2 && rr_replay_fixed(1, tv, sizeof(*tv))) return 0;
+    int r = real_gettimeofday ? real_gettimeofday(tv, tz) : (int)syscall(SYS_gettimeofday, tv, tz);
+    if (ob_mode == 1) rr_record_fixed(1, tv, sizeof(*tv));
+    if (real_gettimeofday && (c % 50000) == 0) nd_dump();
+    return r;
 }
 int clock_gettime(clockid_t id, struct timespec *ts) {
     long c = __atomic_add_fetch(&nd_clock_gettime, 1, __ATOMIC_RELAXED);
-    if (real_clock_gettime) {
-        if ((c % 50000) == 0) nd_dump();
-        return real_clock_gettime(id, ts);
-    }
-    return syscall(SYS_clock_gettime, id, ts);
-}
-ssize_t getrandom(void *buf, size_t len, unsigned int flags) {
-    __atomic_fetch_add(&nd_getrandom, 1, __ATOMIC_RELAXED);
-    if (real_getrandom) return real_getrandom(buf, len, flags);
-    return syscall(SYS_getrandom, buf, len, flags);
+    if (ob_mode == 2 && rr_replay_fixed(2, ts, sizeof(*ts))) return 0;
+    int r = real_clock_gettime ? real_clock_gettime(id, ts) : (int)syscall(SYS_clock_gettime, id, ts);
+    if (ob_mode == 1) rr_record_fixed(2, ts, sizeof(*ts));
+    if (real_clock_gettime && (c % 50000) == 0) nd_dump();
+    return r;
 }
 time_t time(time_t *t) {
     __atomic_fetch_add(&nd_time, 1, __ATOMIC_RELAXED);
-    if (real_time) return real_time(t);
-    return (time_t)syscall(SYS_time, t);
+    time_t val;
+    if (ob_mode == 2 && rr_replay_fixed(4, &val, sizeof(val))) {
+        if (t) *t = val;
+        return val;
+    }
+    val = real_time ? real_time(t) : (time_t)syscall(SYS_time, t);
+    if (ob_mode == 1) rr_record_fixed(4, &val, sizeof(val));
+    return val;
+}
+ssize_t getrandom(void *buf, size_t len, unsigned int flags) {
+    __atomic_fetch_add(&nd_getrandom, 1, __ATOMIC_RELAXED);
+    if (ob_mode == 2) {
+        pthread_mutex_lock(&lock);
+        if (rep_cursor + 5 <= rep_len && rep_buf[rep_cursor] == 3) {
+            uint32_t rl;
+            memcpy(&rl, rep_buf + rep_cursor + 1, 4);
+            if (rep_cursor + 5 + rl <= rep_len) {
+                size_t cp = rl < len ? rl : len;
+                memcpy(buf, rep_buf + rep_cursor + 5, cp);
+                rep_cursor += 5 + rl;
+                pthread_mutex_unlock(&lock);
+                return (ssize_t)cp;
+            }
+        }
+        rep_diverged++;
+        pthread_mutex_unlock(&lock);
+    }
+    ssize_t r = real_getrandom ? real_getrandom(buf, len, flags) : syscall(SYS_getrandom, buf, len, flags);
+    if (ob_mode == 1 && r > 0) {
+        pthread_mutex_lock(&lock);
+        if (rec_fp) {
+            uint32_t rl = (uint32_t)r;
+            fputc(3, rec_fp);
+            fwrite(&rl, 4, 1, rec_fp);
+            fwrite(buf, 1, (size_t)r, rec_fp);
+        }
+        pthread_mutex_unlock(&lock);
+    }
+    return r;
 }
 
 int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
