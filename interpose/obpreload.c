@@ -100,11 +100,13 @@ static void rr_init(void) {
     }
 }
 
+static long rr_writes = 0;
 static void rr_record_fixed(unsigned char type, const void *p, size_t len) {
     pthread_mutex_lock(&lock);
     if (rec_fp) {
         fputc(type, rec_fp);
         fwrite(p, 1, len, rec_fp);
+        if ((++rr_writes & 0xF) == 0) fflush(rec_fp);
     }
     pthread_mutex_unlock(&lock);
 }

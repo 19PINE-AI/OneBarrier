@@ -406,6 +406,40 @@ verdict** — a verifier confirms the history, the standard bar for a strong FT
 paper. (KV linearizability decomposes per key by locality, so the register checker
 is the core.)
 
+### libOS time virtualization → deterministic recovery of unmodified Node.js — 2026-06-21
+
+The `obpreload` shim now does **record/replay** of nondeterministic returns
+(`OB_RECORD` logs every `gettimeofday`/`clock_gettime`/`getrandom`/`time` result;
+`OB_REPLAY` returns them in order). Validated on a deterministic 4 M-call test:
+replay **byte-identical** to record, `replay_diverged = 0`.
+
+End-to-end on an **unmodified Node.js** HTTP server returning `Date.now()` per
+request (`interpose/recover-node.sh`): record a live run, **crash it, wait 4 s so
+the wall clock advances**, then replay:
+
+```
+live   Date.now: 1782052135193 1782052135198 1782052135202 ...
+replay Date.now: 1782052135193 1782052135198 1782052135202 ...   <- 8/8 MATCH
+control (real time) Date.now: differs from live (YES)
+```
+
+**Result:** every `Date.now()` value reproduces **byte-identically** on recovery
+despite the 4-second gap — *deterministic time recovery of an unmodified app*, the
+transparent-FT vision realized for the time dimension. A control run (real time,
+no replay) differs, proving the nondeterminism that virtualization removes.
+
+**Honest edges (the libOS's remaining work):**
+- **vDSO is NOT a blocker** — `LD_PRELOAD` catches the exported
+  `clock_gettime`/`gettimeofday` symbols (a controlled test counted exactly
+  2 M each); glibc's vDSO use is internal to the real call we delegate to.
+- **RNG (`Math.random`) is not yet virtualized.** V8 seeds its PRNG from an
+  entropy source the libc shim doesn't catch (raw `getrandom` syscall, or a
+  `/dev/urandom` `read`). The `/dev/urandom` read-replay attempt **destabilized
+  node's startup** — its startup read sequence isn't byte-reproducible — which is
+  exactly the *startup/scheduling determinism* boundary (PAPER-PLAN §2 item 5).
+  Full RNG determinism needs syscall-level interception (seccomp) or a
+  deterministic startup, the documented next step.
+
 ## Claims ledger (RQ → evidence)
 
 | RQ | Claim | Evidence | State |
