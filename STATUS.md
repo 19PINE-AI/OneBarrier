@@ -327,6 +327,27 @@ senders to the recovering node) restores convergence at every load. Absolute
 recovery is sub-ms to tens-of-ms — vs Redis Cluster detection ~3.3 s and Flink
 restore a minute+. Guarded by `recovery::converges_below_capacity_and_livelocks_above`.
 
+### Nondeterminism characterization — REAL measurement (paper exp #5) — 2026-06-21
+
+The `obpreload` shim, extended to count the interceptable nondeterministic libc
+calls, run over **unmodified `redis-server`** under `redis-benchmark` (16 000 ops):
+
+| source | total | per request | virtualization |
+|---|---:|---:|---|
+| `gettimeofday` | 77 284 | **4.83** | virtual time keyed to the fabric timestamp |
+| `time` | 15 010 | **0.94** | virtual time |
+| `clock_gettime` | 30 | ~0 | (startup only) |
+| `getrandom` | 0 | 0 | RNG seeded at startup, not per-op |
+
+**Read-out (a citable result):** once the fabric removes the *dominant*
+nondeterminant — message arrival order — the **residual local nondeterminism in a
+real unmodified server is almost entirely wall-clock reads (~5.8/request), all
+trivially virtualizable**; there is **no RNG and no other source in steady
+state**. This empirically justifies OneBarrier's core mechanism: eliminate
+message-order via the fabric, virtualize a tiny time-only residual, and replay is
+deterministic. (Note: vDSO-inlined time paths can undercount via `LD_PRELOAD`;
+the full libOS intercepts the vDSO too — the residual is a floor, not a ceiling.)
+
 ## Claims ledger (RQ → evidence)
 
 | RQ | Claim | Evidence | State |

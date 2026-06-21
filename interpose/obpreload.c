@@ -24,8 +24,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/random.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
+#include <sys/time.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #define MAXFD 65536
@@ -35,6 +39,26 @@ static ssize_t (*real_recv)(int, void *, size_t, int) = NULL;
 static int (*real_accept)(int, struct sockaddr *, socklen_t *) = NULL;
 static int (*real_accept4)(int, struct sockaddr *, socklen_t *, int) = NULL;
 static int (*real_close)(int) = NULL;
+
+/* Nondeterminism characterization (docs/PAPER-PLAN.md exp #5): the libc sources
+ * of local nondeterminism the libOS must virtualize once the fabric has removed
+ * message-order nondeterminism.  Counted by interposing the libc symbols. */
+static int (*real_gettimeofday)(struct timeval *, void *) = NULL;
+static int (*real_clock_gettime)(clockid_t, struct timespec *) = NULL;
+static ssize_t (*real_getrandom)(void *, size_t, unsigned int) = NULL;
+static time_t (*real_time)(time_t *) = NULL;
+static long nd_requests = 0, nd_gettimeofday = 0, nd_clock_gettime = 0,
+           nd_getrandom = 0, nd_time = 0;
+
+static void nd_dump(void) {
+    const char *path = getenv("OB_NDSTATS");
+    if (!path) return;
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f, "requests %ld\ngettimeofday %ld\nclock_gettime %ld\ngetrandom %ld\ntime %ld\n",
+            nd_requests, nd_gettimeofday, nd_clock_gettime, nd_getrandom, nd_time);
+    fclose(f);
+}
 
 static unsigned char is_conn[MAXFD];   /* fd -> accepted server connection?     */
 static uint32_t conn_id_of[MAXFD];     /* fd -> stable capture connection id     */
@@ -48,6 +72,10 @@ static void ob_init(void) {
     if (!real_accept)  real_accept  = dlsym(RTLD_NEXT, "accept");
     if (!real_accept4) real_accept4 = dlsym(RTLD_NEXT, "accept4");
     if (!real_close)   real_close   = dlsym(RTLD_NEXT, "close");
+    if (!real_gettimeofday) real_gettimeofday = dlsym(RTLD_NEXT, "gettimeofday");
+    if (!real_clock_gettime) real_clock_gettime = dlsym(RTLD_NEXT, "clock_gettime");
+    if (!real_getrandom) real_getrandom = dlsym(RTLD_NEXT, "getrandom");
+    if (!real_time)    real_time    = dlsym(RTLD_NEXT, "time");
     if (!cap) {
         const char *path = getenv("OB_CAPTURE");
         if (path) {
@@ -69,6 +97,7 @@ static void mark_conn(int fd) {
 static void capture(int fd, const void *buf, ssize_t n) {
     if (n <= 0 || fd < 0 || fd >= MAXFD || !is_conn[fd]) return;
     pthread_mutex_lock(&lock);
+    nd_requests++;
     if (cap) {
         uint32_t cid = conn_id_of[fd];
         uint32_t len = (uint32_t)n;
@@ -77,7 +106,35 @@ static void capture(int fd, const void *buf, ssize_t n) {
         fwrite(buf, 1, (size_t)n, cap);
         fflush(cap);
     }
+    if ((nd_requests & 0x3F) == 0) nd_dump(); /* periodic snapshot (survives kill) */
     pthread_mutex_unlock(&lock);
+}
+
+/* Resolve all real symbols once at load.  Robust against the LD_PRELOAD early-
+ * init trap: the interceptors below NEVER call dlsym themselves — if the real
+ * symbol isn't resolved yet (a call during ld.so init, before this constructor
+ * runs) they fall back to the raw syscall.  No recursion, no TLS. */
+__attribute__((constructor)) static void ob_ctor(void) { ob_init(); }
+
+int gettimeofday(struct timeval *tv, void *tz) {
+    __atomic_fetch_add(&nd_gettimeofday, 1, __ATOMIC_RELAXED);
+    if (real_gettimeofday) return real_gettimeofday(tv, tz);
+    return syscall(SYS_gettimeofday, tv, tz);
+}
+int clock_gettime(clockid_t id, struct timespec *ts) {
+    __atomic_fetch_add(&nd_clock_gettime, 1, __ATOMIC_RELAXED);
+    if (real_clock_gettime) return real_clock_gettime(id, ts);
+    return syscall(SYS_clock_gettime, id, ts);
+}
+ssize_t getrandom(void *buf, size_t len, unsigned int flags) {
+    __atomic_fetch_add(&nd_getrandom, 1, __ATOMIC_RELAXED);
+    if (real_getrandom) return real_getrandom(buf, len, flags);
+    return syscall(SYS_getrandom, buf, len, flags);
+}
+time_t time(time_t *t) {
+    __atomic_fetch_add(&nd_time, 1, __ATOMIC_RELAXED);
+    if (real_time) return real_time(t);
+    return (time_t)syscall(SYS_time, t);
 }
 
 int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
