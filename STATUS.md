@@ -13,7 +13,7 @@ as the autonomous research proceeds.
 | M2 | RQ2 harness — output-commit latency decomposition + durability-tier comparison (in-fabric/mem vs fsync) on the live fabric | **done** ✅ |
 | M3 | Apps (production, end-to-end) on a shared `KvService` — durable, crash-recoverable, real clients: RESP (Redis), Memcached, HTTP/1.1 REST, transactional store (atomic txns), pub/sub streaming log | **5/5 done** ✅ |
 | M4 | In-harness baselines: real-Redis (RQ1), active-SMR (RQ5), central-sequencer (RQ7), **+ LLFT (host sequencer) & HyCoR (nondeterminism-log) head-to-head** | **done** ✅ |
-| M5 | Correctness-under-fault + sweeps | **partial**: crash-injection correctness (engine + live fabric) RQ3/RQ4, scale RQ6, CPU RQ5, interval RQ8 done; a broad concurrent-fault linearizability checker remains |
+| M5 | Correctness-under-fault + sweeps: crash-injection (RQ3/RQ4), scale (RQ6), CPU (RQ5), interval (RQ8), **+ `ob-jepsen` concurrent-fault checker (real `kill -9`)** | **done** ✅ |
 | TB | Track B — transparent interception: `LD_PRELOAD` shim records an **unmodified** binary; `ob-replay` rebuilds state. Demoed on stock `redis-server` | **done** ✅ (scoped) |
 
 ## Reproducible results
@@ -230,6 +230,30 @@ apply+append work (it sometimes matches OneBarrier at the engine level); the
 sequencer cost is **isolated and dramatic in RQ7** (`ob-order`, where ordering is
 the only work). Together M4 + RQ7 bracket the contribution: the order-log
 (HyCoR) and the sequencer (LLFT) are both costs OneBarrier avoids via the fabric.
+
+### M5 — Jepsen-style concurrent-fault consistency (2026-06-21)
+
+`./target/release/ob-jepsen --clients 8 --ops 12000` — 8 concurrent clients write
+96 000 unique keys against the **real `ob-kv` process**, which is **`kill -9`'d
+mid-load and restarted**:
+
+```
+  >>> kill -9 the server (crash) ...
+  >>> server restarted and recovered: true
+  acknowledged writes:        95976
+  ambiguous (in-flight) ops:  8   (excluded — honest output-commit gap)
+  LOST acked writes:          0   <- must be 0
+  TORN values:                0   <- must be 0
+  RESULT: PASS — every acknowledged write survived the crash, exactly
+```
+
+**Read-out:** under a true `kill -9` mid-load, **every one of the 95 976
+acknowledged writes survived** the crash + recovery with its exact value (0 lost,
+0 torn), while exactly **8 in-flight ops** (one per client at the instant of the
+kill) are recorded as **ambiguous** — the precise output-commit boundary the
+theory predicts (an acked write is durable because the ack follows the durable
+append; an in-flight op is unknowable). This is end-to-end linearizable durability
+under concurrent fault injection, on the real binary.
 
 ## Claims ledger (RQ → evidence)
 

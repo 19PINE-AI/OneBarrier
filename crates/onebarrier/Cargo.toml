@@ -65,3 +65,7 @@ path = "src/bin/ob_log.rs"
 [[bin]]
 name = "ob-baselines"
 path = "src/bin/ob_baselines.rs"
+
+[[bin]]
+name = "ob-jepsen"
+path = "src/bin/ob_jepsen.rs"
