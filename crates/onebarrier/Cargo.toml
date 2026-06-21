@@ -57,3 +57,7 @@ path = "src/bin/ob_order.rs"
 [[bin]]
 name = "ob-txn"
 path = "src/bin/ob_txn.rs"
+
+[[bin]]
+name = "ob-log"
+path = "src/bin/ob_log.rs"
