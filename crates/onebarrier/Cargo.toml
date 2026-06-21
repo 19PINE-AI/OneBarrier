@@ -29,3 +29,7 @@ path = "src/bin/ob_kv.rs"
 [[bin]]
 name = "ob-mc"
 path = "src/bin/ob_mc.rs"
+
+[[bin]]
+name = "ob-replay"
+path = "src/bin/ob_replay.rs"

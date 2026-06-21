@@ -14,6 +14,7 @@ as the autonomous research proceeds.
 | M3 | Apps 1–2 (production, end-to-end): RESP (Redis) + Memcached text-protocol servers on a shared `KvService` — durable, crash-recoverable, real clients | **2/5 done** ✅ |
 | M4 | In-harness baselines: LLFT-style host-virtual-time order, HyCoR-style nondeterminism logging, SMR (N active), logging-FT | todo |
 | M5 | Jepsen-style linearizability checker (RQ4) + recovery/scale sweeps (RQ3/RQ5/RQ6) | todo |
+| TB | Track B — transparent interception: `LD_PRELOAD` shim records an **unmodified** binary; `ob-replay` rebuilds state. Demoed on stock `redis-server` | **done** ✅ (scoped) |
 
 ## Reproducible results
 
@@ -114,6 +115,19 @@ found; **real Redis with `appendfsync always` collapses identically** — confir
 the operating-point thesis is a property of durability tier, not of OneBarrier.
 AOF-everysec ≈ no-FT for Redis because it batches fsync (its in-flight window is
 the analogue of riding the barrier).
+
+### Track B — transparent interception of an unmodified binary (2026-06-21)
+
+`bash interpose/demo.sh` — the `obpreload` `LD_PRELOAD` shim transparently
+intercepts the socket I/O of **stock `redis-server`** (no changes, no knowledge of
+OneBarrier), capturing 413 B of request stream; after `kill -9` and a fresh empty
+instance (`DBSIZE=0`), `ob-replay` rebuilds the state from the capture:
+`DBSIZE=7, name=OneBarrier, hits=2`, all keys restored. This is the transparent
+vision demonstrated in user space (no kernel changes). Honest scope: captures the
+network input stream but not yet time/RNG/scheduling non-determinism — see
+`interpose/README.md`. Native servers (`ob-kv`, `ob-mc`) get the full in-engine
+treatment; this brings the *unmodified*-binary case as close as user-space
+interposition allows.
 
 ## Claims ledger (RQ → evidence)
 
