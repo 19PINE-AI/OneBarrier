@@ -165,6 +165,47 @@ the shim catches the libc time surface of any binary (a control counted exactly
 `LD_PRELOAD` overrides the exported symbols). Honest residual scope (RNG via raw
 `getrandom`, arbitrary multithreaded scheduling) documented in `interpose/README.md`.
 
+### Track B+++ — end-to-end recovery, checkpointing, torture test (2026-06-22)
+
+Three follow-ups that turn the per-source determinism results into a coherent,
+adversarially-validated recovery story (all RDMA-independent).
+
+**Capstone: end-to-end application-STATE recovery** — `interpose/ob-state-recovery.sh`.
+Not just "a probe matches" but the FULL app state, including state *derived from*
+time and RNG, reconstructed byte-identical by deterministic request-replay under
+the libOS; a no-libOS control rebuilds different state.
+- redis: keys with TTLs → recovered `pttl` byte-identical (`cache:x=42 pttl=1499996
+  … session:2=bob pttl=7199989`); control differs.
+- node: session store `{id:Math.random(), ts:Date.now()}` → recovered store
+  byte-identical incl. random IDs + timestamps (`1yh8zfvmd1m@1782135298488 …`);
+  control has entirely different IDs/timestamps.
+
+**Checkpoint + tail-replay** — `interpose/ob-checkpoint-replay.sh`. Recovery from
+process start costs O(all requests); a checkpoint bounds it to O(tail). New shim
+primitive `OB_VCLOCK_TICKS` checkpoints/resumes the virtual-clock tick count so the
+recovered instance resumes time exactly where the snapshot was taken. redis RDB
+snapshot + 20-request tail-replay reconstructs state byte-identical to live AND to
+full 41-request replay (TTLs included) — **2.05× less replay work**. CRIU (the
+general any-binary mechanism) is unavailable here (no `CAP_SYS_ADMIN`/netns,
+confirmed); redis RDB shows the principle; engine-level RQ8 quantifies the tradeoff.
+
+**Correctness torture test on the UNMODIFIED app** — `cargo run --release -p
+onebarrier --bin ob-app-jepsen`. ob-jepsen/ob-lincheck exercise the engine; this
+runs the same adversarial checks against stock `redis-server` recovered through the
+libOS path: 8 concurrent clients hammer redis (under the capture shim) with
+unique-key writes + a shared register, `kill -9` mid-load, then a fresh empty redis
+is recovered by replaying the captured stream (`ob-replay`).
+```
+  acknowledged unique writes:  191073
+  LOST acked writes:           0
+  TORN values:                 0
+  register history size:       33
+  LINEARIZABLE:                true   (from-scratch Wing-Gong oracle)
+  RESULT: PASS
+```
+Every acknowledged write survived recovery exactly (in-flight ops excluded — the
+honest output-commit gap), and the concurrent register history is linearizable.
+
 ### Track B++ — RNG and thread-scheduling determinism (2026-06-21)
 
 The two residual nondeterminism sources beyond time, closed comprehensively (no
