@@ -635,17 +635,23 @@ deterministic scheduling (PAPER-PLAN §2 item 5) — with a measurement, not a g
 time-independent and works for all these KV apps, as the stock-redis record-replay
 demo shows.)
 
-**Honest edges (the libOS's remaining work):**
+**Edges — now CLOSED (see Track B++/B+++/B++++ for the work):**
 - **vDSO is NOT a blocker** — `LD_PRELOAD` catches the exported
   `clock_gettime`/`gettimeofday` symbols (a controlled test counted exactly
-  2 M each); glibc's vDSO use is internal to the real call we delegate to.
-- **RNG (`Math.random`) is not yet virtualized.** V8 seeds its PRNG from an
-  entropy source the libc shim doesn't catch (raw `getrandom` syscall, or a
-  `/dev/urandom` `read`). The `/dev/urandom` read-replay attempt **destabilized
-  node's startup** — its startup read sequence isn't byte-reproducible — which is
-  exactly the *startup/scheduling determinism* boundary (PAPER-PLAN §2 item 5).
-  Full RNG determinism needs syscall-level interception (seccomp) or a
-  deterministic startup, the documented next step.
+  2 M each); the virtual clock makes nginx's `Date:` header byte-identical on replay.
+- **RNG IS virtualized** — `Math.random` (V8) is byte-identical across recovery via
+  the seccomp `getrandom` trap + ASLR-off + RDRAND-disable; redis's internal RNG
+  (`SPOP`/`SRANDMEMBER`, seeded from `/dev/urandom`) via a mount-namespace
+  deterministic-`/dev/urandom` redirect. All 5 apps recover deterministically.
+- **Thread scheduling IS virtualized** — Kendo-style deterministic logical clocks
+  (`libdetsched.so`) give identical multithreaded interleavings; composes with
+  `memcached -t 4`.
+- **Process-state checkpoint** — CRIU full-process checkpoint/restore works in a
+  KVM guest (CRIU 3.19), preserving the in-memory libOS clock; bounds recovery to
+  the post-checkpoint tail.
+- **Only true remaining edge:** direct measurement of the FT-overlap latency benefit
+  needs real RDMA hardware (SoftRoCE confirms verbs + ~1.5 µs per-op latency but is
+  CPU-bound; the sim models the RTT-bound overlap).
 
 ## Claims ledger (RQ → evidence)
 

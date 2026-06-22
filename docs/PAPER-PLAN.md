@@ -27,16 +27,18 @@ No real RDMA testbed is available, so the hardware experiments are done in
 | **exp #5 nondeterminism** | real `obpreload` measurement | ✅ residual = ~5.8 wall-clock reads/req (redis), zero RNG/other; **vDSO finding** (nginx time via vDSO, uncountable by LD_PRELOAD) |
 | **exp #6 recovery + livelock** | recovery model (`ob-recovery`) | ✅ converge / livelock / backpressure characterized |
 | **exp #7 linearizability** | from-scratch Wing-Gong (`ob-lincheck`) | ✅ real concurrent OneBarrier history verified linearizable (not acked-set heuristic) |
-| **GATE B — interception of unmodified app** | `obpreload` on **redis + nginx** | ✅ stock nginx (multithreaded) intercepted, 2.28 MB captured, 137k req/s; record-replay recovery on stock redis. ◑ full time-virtualized replay of a vDSO app = the libOS build |
-| exp #4 diverse unmodified apps under FULL FT libOS | — | ☐ needs the full libOS (vDSO + thread virtualization) |
-| real RDMA/P4 measurement | — | ☐ needs hardware (sim stands in) |
+| **GATE B — interception of unmodified app** | `obpreload` on **redis + nginx** | ✅ stock nginx (multithreaded) intercepted, 2.28 MB captured, 137k req/s; record-replay recovery on stock redis |
+| **exp #4 diverse unmodified apps under FULL FT libOS** | virtual clock + RNG (seccomp/urandom) + DMT (Kendo) | ✅ **DONE** — deterministic recovery of 5 unmodified apps (redis, memcached, nginx, node + engine); time/RNG/threads all virtualized; redis-internal RNG (SPOP) too; CRIU full-process checkpoint in a KVM guest (`ob-criu-kvm.sh`) |
+| real RDMA measurement | **real verbs via SoftRoCE** (`ob-rdma-softroce.sh`) + sim | ◑ real ibverbs RDMA_WRITE ≈ 1.5 µs (in the operating point); the RTT-bound *overlap* needs hardware (SoftRoCE is CPU-bound) — `ob-sim` models it |
 
-The make-or-break **GATE A passes in simulation**; **GATE B reached for
-interception** on a real multithreaded server. The only remaining ☐ items truly
-need the RDMA testbed or the full libOS build (§2) — simulation/scoping stands in
-for them and is labelled as such. Everything achievable without RDMA hardware is
-now done (formal proofs, sim at the operating point, real competitors via CRIU,
-real linearizability, real nondeterminism, real unmodified-app interception).
+The make-or-break **GATE A passes in simulation**, with the operating-point latency
+now corroborated by **real RDMA verbs over SoftRoCE** (≈1.5 µs RDMA_WRITE); **GATE B
+reached**, and the **full FT libOS (exp #4) is built and validated** on 5 unmodified
+apps (time + RNG + thread scheduling all virtualized), with CRIU general checkpoint
+working in a KVM guest. The ONLY thing still needing real hardware is the *direct*
+measurement of the FT-overlap latency benefit at 1-2 µs RTT (SoftRoCE is CPU-bound,
+so it confirms verbs + per-op latency but not the overlap; the sim models the
+RTT-bound regime). Everything achievable without an RDMA NIC is done.
 
 ## 0. The gap, named
 
