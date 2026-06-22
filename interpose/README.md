@@ -190,10 +190,12 @@ O(tail). Two mechanisms:
 - **App-native (works in-sandbox)** — `ob-checkpoint-replay.sh`: redis RDB snapshot
   + tail-replay, with the virtual clock resuming via `OB_VCLOCK_TICKS`. Byte-
   identical state replaying 20 reqs vs 41 (2.05×).
-- **General, any-binary** — `ob-criu-checkpoint.sh`: CRIU dumps the whole process
-  (incl. the in-memory virtual clock), so restore needs no replay. CRIU *dump*
-  works here; *restore* is blocked by this sandbox's kernel (a trivial process's
-  restorer completes then SIGSEGVs; Docker/runc share the kernel and fail the
-  same). The harness completes on a standard kernel.
+- **General, any-binary** — `ob-criu-kvm.sh`: CRIU dumps the whole process (incl.
+  the in-memory virtual clock), so restore needs no replay. The distro CRIU 3.16.1
+  segfaults on restore under kernel 6.8 (reproduces in a fresh KVM guest, so it's a
+  CRIU-version issue, not the sandbox). The harness builds **CRIU 3.19** and runs it
+  in a **KVM guest**: checkpoint/restore of unmodified redis works, and the libOS
+  virtual clock is preserved across C/R (RESULT-A and RESULT-B both PASS).
+  `ob-criu-checkpoint.sh` is the host-side attempt (documents the version blocker).
 
 None of the above requires RDMA — the libOS is effort-gated, commodity-hardware work.

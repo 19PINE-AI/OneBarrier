@@ -185,16 +185,27 @@ RESULT: redis RNG-derived state byte-identical across recovery, control differs 
 `SECCOMP_IOCTL_NOTIF_ADDFD`, `OB_VRAND_OPENAT=1` — robust but fragile during the
 dynamic linker's own opens, so the mount-namespace path is the default.)
 
-**CRIU general checkpoint — characterized.** `interpose/ob-criu-checkpoint.sh`
-runs the full checkpoint→kill→restore cycle. CRIU **dump works** (18 image files);
-**restore is blocked by this sandbox's kernel** — proven minimal: a trivial
-single-threaded process, dumped/restored as root with a clean process tree, has its
-restorer *complete* ("Restored", vDSO remapped inplace) then SIGSEGV ~46 ms after
-resuming (a kernel page-restoration/restorer incompatibility, not app/config).
-Docker `checkpoint` and `runc checkpoint` share the host kernel and fail identically
-(Docker also hits netns + containerd-content checkpoint bugs). The harness completes
-on a standard kernel; in-sandbox, the app-native RDB path (ob-checkpoint-replay.sh)
-demonstrates the same bounded-recovery principle and RQ8 quantifies it.
+**CRIU general checkpoint — WORKING in a KVM guest.** `interpose/ob-criu-kvm.sh`.
+The distro CRIU (3.16.1) segfaults on *restore* under kernel 6.8 — and crucially
+this reproduces in a **fresh KVM guest** with its own kernel instance (a trivial
+static process's restorer completes then SIGSEGVs), so the cause is **CRIU's
+version vs the kernel**, NOT the sandbox as first suspected. Fix: build **CRIU
+3.19** from source and run it in a KVM guest (host kernel image + full module tree
++ busybox initramfs). Then CRIU checkpoint/restore of **unmodified redis** works
+end-to-end, and it **preserves the libOS virtual-clock state** (the in-memory
+`vclock_ticks` survives C/R), so the pre-checkpoint history — including libOS state
+— needs NO replay. Guest console:
+```
+[criu check] Looks good.
+[A] before: dbsize=2 k1=hello ctr=2  →  after restore: dbsize=2 k1=hello ctr=2 (dump=0 restore=0)
+RESULT-A: PASS — full redis state checkpoint+restore (general mechanism)
+[B] virtual TIME before checkpoint: 1782140776  →  after restore: 1782140776 (2 s real gap)
+RESULT-B: PASS — virtual clock preserved by CRIU (in-memory libOS state survives C/R)
+```
+(Docker `checkpoint`/`runc checkpoint` on the host share the old CRIU + kernel and
+also hit netns/containerd bugs; `ob-criu-checkpoint.sh` documents the host-side
+attempt.) The app-native RDB path (ob-checkpoint-replay.sh) shows the same
+bounded-recovery principle without a VM, and RQ8 quantifies the tradeoff.
 
 ### Track B+++ — end-to-end recovery, checkpointing, torture test (2026-06-22)
 
