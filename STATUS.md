@@ -165,6 +165,37 @@ the shim catches the libc time surface of any binary (a control counted exactly
 `LD_PRELOAD` overrides the exported symbols). Honest residual scope (RNG via raw
 `getrandom`, arbitrary multithreaded scheduling) documented in `interpose/README.md`.
 
+### Track B++++ — redis-internal RNG fixed + CRIU characterized (2026-06-22)
+
+**redis 6 internal randomness — FIXED.** `SPOP`/`SRANDMEMBER` were nondeterministic
+across restarts because redis seeds its dict hash (SipHash) from `/dev/urandom`,
+read via `fopen` — which bypasses BOTH the getrandom(2) seccomp trap AND
+`LD_PRELOAD` symbol interposition (glibc's `fopen`/`fread` use internal openat/read
+that don't go through the public symbols; confirmed by strace:
+`openat("/dev/urandom")` with no `memfd_create`). Fix: run redis in a private MOUNT
+namespace (`unshare -r -m`) with a deterministic file bind-mounted over
+`/dev/urandom`, plus the rest of the stack. `interpose/ob-redis-rng.sh`:
+```
+LIVE      popped=m19,m29,m3,m31,m39,m16,m1,m34,m35,m14,m25,m22,m33,m17,m37
+RECOVERED popped=m19,m29,m3,m31,m39,m16,m1,m34,m35,m14,m25,m22,m33,m17,m37   (byte-identical)
+CONTROL   popped=m31,m37,m7,m11,m38,m40,m23,m5,m12,m22,m1,m26,m27,m33,m32   (real urandom, differs)
+RESULT: redis RNG-derived state byte-identical across recovery, control differs ✅
+```
+(`librngdet.so` also gained an optional syscall-level openat redirect via
+`SECCOMP_IOCTL_NOTIF_ADDFD`, `OB_VRAND_OPENAT=1` — robust but fragile during the
+dynamic linker's own opens, so the mount-namespace path is the default.)
+
+**CRIU general checkpoint — characterized.** `interpose/ob-criu-checkpoint.sh`
+runs the full checkpoint→kill→restore cycle. CRIU **dump works** (18 image files);
+**restore is blocked by this sandbox's kernel** — proven minimal: a trivial
+single-threaded process, dumped/restored as root with a clean process tree, has its
+restorer *complete* ("Restored", vDSO remapped inplace) then SIGSEGV ~46 ms after
+resuming (a kernel page-restoration/restorer incompatibility, not app/config).
+Docker `checkpoint` and `runc checkpoint` share the host kernel and fail identically
+(Docker also hits netns + containerd-content checkpoint bugs). The harness completes
+on a standard kernel; in-sandbox, the app-native RDB path (ob-checkpoint-replay.sh)
+demonstrates the same bounded-recovery principle and RQ8 quantifies it.
+
 ### Track B+++ — end-to-end recovery, checkpointing, torture test (2026-06-22)
 
 Three follow-ups that turn the per-source determinism results into a coherent,

@@ -171,10 +171,29 @@ Scope (Kendo's domain): race-free programs whose threads make progress through s
 operations. Pure-compute threads that never sync are out of scope (Kendo uses HW
 perf counters there).
 
-## Remaining work
+### redis-internal RNG (`/dev/urandom`) — `ob-redis-rng.sh`
 
-- **Process-state capture**: recovery currently replays from process start;
-  checkpoint-based recovery (CRIU/libOS snapshot + tail replay) shortens replay
-  (CRIU dump measured; restore was sandbox-blocked).
+redis 6 seeds its dict (SipHash) from `/dev/urandom` via `fopen`, which bypasses
+both the getrandom seccomp trap and symbol interposition (glibc's internal
+openat/read). So `SPOP`/`SRANDMEMBER` were nondeterministic across restarts. Fixed
+by running redis in a private mount namespace with a deterministic file
+bind-mounted over `/dev/urandom` — redis's RNG-derived state then recovers
+byte-identically (popped/remaining set members identical live vs replay; a control
+with the real device differs). `librngdet.so` also offers an optional syscall-level
+openat redirect (`OB_VRAND_OPENAT=1`, via `SECCOMP_IOCTL_NOTIF_ADDFD`).
+
+## Checkpointing (bounded recovery)
+
+Replaying from process start costs O(all requests); a checkpoint bounds it to
+O(tail). Two mechanisms:
+
+- **App-native (works in-sandbox)** — `ob-checkpoint-replay.sh`: redis RDB snapshot
+  + tail-replay, with the virtual clock resuming via `OB_VCLOCK_TICKS`. Byte-
+  identical state replaying 20 reqs vs 41 (2.05×).
+- **General, any-binary** — `ob-criu-checkpoint.sh`: CRIU dumps the whole process
+  (incl. the in-memory virtual clock), so restore needs no replay. CRIU *dump*
+  works here; *restore* is blocked by this sandbox's kernel (a trivial process's
+  restorer completes then SIGSEGVs; Docker/runc share the kernel and fail the
+  same). The harness completes on a standard kernel.
 
 None of the above requires RDMA — the libOS is effort-gated, commodity-hardware work.

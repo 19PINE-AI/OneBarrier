@@ -26,6 +26,9 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <stdarg.h>
+#include <sys/types.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <pthread.h>
 #include <sys/prctl.h>
@@ -55,6 +58,19 @@
 #ifndef __NR_getrandom
 #define __NR_getrandom 318
 #endif
+#ifndef __NR_openat
+#define __NR_openat 257
+#endif
+#ifndef __NR_open
+#define __NR_open 2
+#endif
+#ifndef SECCOMP_IOCTL_NOTIF_ADDFD
+struct seccomp_notif_addfd { __u64 id; __u32 flags; __u32 srcfd; __u32 newfd; __u32 newfd_flags; };
+#define SECCOMP_IOCTL_NOTIF_ADDFD SECCOMP_IOWR(3, struct seccomp_notif_addfd)
+#endif
+#ifndef SECCOMP_ADDFD_FLAG_SEND
+#define SECCOMP_ADDFD_FLAG_SEND (1UL << 1)
+#endif
 
 static int notif_fd = -1;
 static int count_only = 0;
@@ -81,6 +97,73 @@ static void det_fill(unsigned char *out, size_t n) {
     pthread_mutex_unlock(&sm_lock);
 }
 
+// --- /dev/urandom & /dev/random determinizer ---------------------------------
+// Some apps (redis 6 getRandomBytes, others) seed their PRNG by reading
+// /dev/urandom directly — not the getrandom(2) syscall — so the seccomp trap above
+// doesn't see it. Interposing read() doesn't help either: glibc's fread uses an
+// internal read path that bypasses the public `read` symbol. So we redirect the
+// OPEN: an open of /dev/urandom returns a memfd pre-filled with bytes from a
+// deterministic stream, so EVERY read path (read/fread/pread) gets the same bytes.
+#define UR_BYTES (1u << 20)   // 1 MiB of deterministic entropy (apps seed with << this)
+static int urand_on = 0;
+static int vpid_on = 0;
+static uint64_t ur_state;
+static int is_randpath(const char *p) {
+    return p && (!strcmp(p, "/dev/urandom") || !strcmp(p, "/dev/random") ||
+                 !strcmp(p, "/dev/srandom") || !strcmp(p, "/dev/hwrng"));
+}
+static int  (*real_open)(const char *, int, ...);
+static int  (*real_open64)(const char *, int, ...);
+static int  (*real_openat)(int, const char *, int, ...);
+static void ur_resolve(void) {
+    if (real_openat) return;
+    real_open   = (int (*)(const char *, int, ...))dlsym(RTLD_NEXT, "open");
+    real_open64 = (int (*)(const char *, int, ...))dlsym(RTLD_NEXT, "open64");
+    real_openat = (int (*)(int, const char *, int, ...))dlsym(RTLD_NEXT, "openat");
+}
+// Build a memfd holding UR_BYTES of deterministic bytes; return its fd at offset 0.
+static int det_urandom_fd(void) {
+    int fd = (int)syscall(SYS_memfd_create, "ob-urandom", 0);
+    if (fd < 0) return -1;
+    unsigned char buf[4096];
+    uint64_t s = ur_state;
+    for (unsigned off = 0; off < UR_BYTES; off += sizeof buf) {
+        for (size_t i = 0; i < sizeof buf; i += 8) {
+            uint64_t z = (s += 0x9E3779B97F4A7C15ULL);
+            z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+            z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+            z ^= (z >> 31);
+            memcpy(buf + i, &z, 8);
+        }
+        if (write(fd, buf, sizeof buf) < 0) { close(fd); return -1; }
+    }
+    lseek(fd, 0, SEEK_SET);
+    return fd;
+}
+
+int open(const char *path, int flags, ...) {
+    if (!real_open) ur_resolve();
+    if (urand_on && is_randpath(path)) { int f = det_urandom_fd(); if (f >= 0) return f; }
+    mode_t m = 0; if (flags & O_CREAT) { va_list a; va_start(a, flags); m = va_arg(a, int); va_end(a); }
+    return real_open(path, flags, m);
+}
+int open64(const char *path, int flags, ...) {
+    if (!real_open64) ur_resolve();
+    if (urand_on && is_randpath(path)) { int f = det_urandom_fd(); if (f >= 0) return f; }
+    mode_t m = 0; if (flags & O_CREAT) { va_list a; va_start(a, flags); m = va_arg(a, int); va_end(a); }
+    return real_open64 ? real_open64(path, flags, m) : real_open(path, flags, m);
+}
+int openat(int dirfd, const char *path, int flags, ...) {
+    if (!real_openat) ur_resolve();
+    if (urand_on && is_randpath(path)) { int f = det_urandom_fd(); if (f >= 0) return f; }
+    mode_t m = 0; if (flags & O_CREAT) { va_list a; va_start(a, flags); m = va_arg(a, int); va_end(a); }
+    return real_openat(dirfd, path, flags, m);
+}
+
+// Pin getpid: apps mix it into RNG seeds (redis: srand(time^getpid)); a constant
+// makes that seed reproducible across the live and recovered processes.
+pid_t getpid(void) { return vpid_on ? (pid_t)4242 : (pid_t)syscall(SYS_getpid); }
+
 // Write n bytes into the target process's buffer at remote address `dst`.
 static int write_remote(pid_t pid, uint64_t dst, const void *src, size_t n) {
     struct iovec local = { (void *)src, n };
@@ -95,6 +178,14 @@ static int write_remote(pid_t pid, uint64_t dst, const void *src, size_t n) {
     ssize_t pw = pwrite(fd, src, n, (off_t)dst);
     close(fd);
     return pw == (ssize_t)n ? 0 : -1;
+}
+
+// Read up to n bytes from the target's memory at `src` (a path string).
+static int read_remote(pid_t pid, uint64_t src, void *dst, size_t n) {
+    struct iovec l = { dst, n };
+    struct iovec r = { (void *)(uintptr_t)src, n };
+    ssize_t rd = process_vm_readv(pid, &l, 1, &r, 1, 0);
+    return rd > 0 ? (int)rd : -1;
 }
 
 static void *supervisor(void *arg) {
@@ -112,14 +203,37 @@ static void *supervisor(void *arg) {
             if (errno == EINTR) continue;
             break;
         }
+        memset(resp, 0, psz);
+        resp->id = req->id;
+        if (ioctl(notif_fd, SECCOMP_IOCTL_NOTIF_ID_VALID, &req->id) < 0) continue;
+        int nr = req->data.nr;
+
+        if (nr == __NR_openat || nr == __NR_open) {
+            // Redirect opens of /dev/urandom etc. to a deterministic memfd, injected
+            // into the target with ADDFD; pass everything else through (CONTINUE).
+            uint64_t pathaddr = (nr == __NR_openat) ? req->data.args[1] : req->data.args[0];
+            char p[256]; memset(p, 0, sizeof p);
+            read_remote(req->pid, pathaddr, p, sizeof p - 1);
+            if (urand_on && is_randpath(p)) {
+                int mfd = det_urandom_fd();
+                struct seccomp_notif_addfd af; memset(&af, 0, sizeof af);
+                af.id = req->id; af.srcfd = (unsigned)mfd; af.flags = SECCOMP_ADDFD_FLAG_SEND; af.newfd = 0;
+                long nf = ioctl(notif_fd, SECCOMP_IOCTL_NOTIF_ADDFD, &af);  // adds fd AND sends response
+                if (mfd >= 0) close(mfd);
+                __atomic_fetch_add(&rng_calls, 1, __ATOMIC_RELAXED);
+                if (nf >= 0) continue;                 // done
+                // fall through to CONTINUE on failure
+            }
+            resp->flags = SECCOMP_USER_NOTIF_FLAG_CONTINUE;
+            ioctl(notif_fd, SECCOMP_IOCTL_NOTIF_SEND, resp);
+            continue;
+        }
+
+        // getrandom: fill the target buffer from the deterministic stream
         uint64_t dst = req->data.args[0];
         size_t len = (size_t)req->data.args[1];
         __atomic_fetch_add(&rng_calls, 1, __ATOMIC_RELAXED);
         __atomic_fetch_add(&rng_bytes, len, __ATOMIC_RELAXED);
-        memset(resp, 0, psz);
-        resp->id = req->id;
-        // ensure the notification is still live before touching remote memory
-        if (ioctl(notif_fd, SECCOMP_IOCTL_NOTIF_ID_VALID, &req->id) < 0) continue;
         int ok = 0;
         for (size_t off = 0; off < len; ) {
             size_t k = (len - off < sizeof buf) ? (len - off) : sizeof buf;
@@ -135,18 +249,36 @@ static void *supervisor(void *arg) {
 }
 
 static int install_filter(void) {
-    struct sock_filter filt[] = {
-        // arch check
+    unsigned notif = count_only ? SECCOMP_RET_ALLOW : SECCOMP_RET_USER_NOTIF;
+    // Trapping open/openat at the syscall level catches /dev/urandom reads that
+    // bypass symbol interposition (glibc fopen), but it also traps the dynamic
+    // linker's own opens, which is fragile during early init. OFF by default
+    // (use the mount-namespace /dev/urandom redirect instead); opt in with
+    // OB_VRAND_OPENAT=1 where it is safe.
+    struct sock_filter filt_full[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),  // 0
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),             // 1
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),                              // 2
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),    // 3
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getrandom, 3, 0),                // 4 -> 8
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_openat,    2, 0),                // 5 -> 8
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_open,      1, 0),                // 6 -> 8
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),                              // 7
+        BPF_STMT(BPF_RET | BPF_K, notif),                                          // 8
+    };
+    struct sock_filter filt_gr[] = {   // getrandom only (robust)
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
-        // nr
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getrandom, 0, 1),
-        BPF_STMT(BPF_RET | BPF_K, count_only ? SECCOMP_RET_ALLOW : SECCOMP_RET_USER_NOTIF),
+        BPF_STMT(BPF_RET | BPF_K, notif),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
     };
-    struct sock_fprog prog = { .len = sizeof filt / sizeof filt[0], .filter = filt };
+    int trap_openat = getenv("OB_VRAND_OPENAT") ? 1 : 0;
+    struct sock_fprog prog = trap_openat
+        ? (struct sock_fprog){ .len = sizeof filt_full / sizeof filt_full[0], .filter = filt_full }
+        : (struct sock_fprog){ .len = sizeof filt_gr   / sizeof filt_gr[0],   .filter = filt_gr };
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) return -1;
     if (count_only) {
         // count-only mode can't observe via RET_ALLOW; use a tracer-free no-op.
@@ -175,6 +307,12 @@ static void rngdet_init(void) {
     count_only = getenv("OB_RNGCOUNT") ? 1 : 0;
     if (!count_only && !getenv("OB_VRAND")) return;  // inert unless asked
     load_seed();
+    // /dev/urandom + getpid pinning travel with OB_VRAND (opt out via OB_NO_URANDOM)
+    ur_resolve();
+    ur_state = sm_state ^ 0xD1B54A32D192ED03ULL;     // distinct stream from getrandom
+    urand_on = getenv("OB_NO_URANDOM") ? 0 : 1;
+    vpid_on  = getenv("OB_NO_VPID") ? 0 : 1;
+    if (count_only) { urand_on = 0; vpid_on = 0; }
     if (install_filter() != 0) {
         const char *m = "[rngdet] seccomp filter install failed; RNG NOT determinized\n";
         if (write(2, m, strlen(m)) < 0) {}
