@@ -31,6 +31,7 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #define MAXFD 65536
 
@@ -66,6 +67,13 @@ static int ob_mode = 0; /* 0 none, 1 record, 2 replay */
 static long long vclock_base_ns = 0;
 static long vclock_ticks = 0;
 static int vclock_on = 0;
+/* OB_VCLOCK_TICKS=<file>: checkpoint/resume the tick count, enabling tail-replay
+ * recovery from an app-native snapshot (e.g. redis RDB) instead of from process
+ * start. On init the shim loads the starting tick offset from the file; on each
+ * input event it persists the current tick count there. A recovery that restores
+ * a checkpoint's state then sets this file to the checkpoint's tick value resumes
+ * virtual time exactly where the checkpoint was taken. */
+static int vclock_tick_fd = -1;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void nd_dump(void) {
@@ -172,7 +180,10 @@ static void capture(int fd, const void *buf, ssize_t n) {
     if (n <= 0 || fd < 0 || fd >= MAXFD || !is_conn[fd]) return;
     pthread_mutex_lock(&lock);
     nd_requests++;
-    if (vclock_on) __atomic_fetch_add(&vclock_ticks, VCLOCK_TICK_NS, __ATOMIC_RELAXED);
+    if (vclock_on) {
+        long t = __atomic_add_fetch(&vclock_ticks, VCLOCK_TICK_NS, __ATOMIC_RELAXED);
+        if (vclock_tick_fd >= 0) { long long v = t; if (pwrite(vclock_tick_fd, &v, 8, 0) < 0) {} }
+    }
     if (cap) {
         uint32_t cid = conn_id_of[fd];
         uint32_t len = (uint32_t)n;
@@ -202,6 +213,13 @@ static void vclock_init(void) {
         vclock_base_ns = (long long)ts.tv_sec * 1000000000LL + ts.tv_nsec;
         FILE *w = fopen(p, "wb");
         if (w) { fwrite(&vclock_base_ns, 8, 1, w); fclose(w); }
+    }
+    /* tick checkpoint/resume file: load starting offset, keep an fd for persisting */
+    const char *tp = getenv("OB_VCLOCK_TICKS");
+    if (tp && *tp) {
+        FILE *tf = fopen(tp, "rb");
+        if (tf) { long long v = 0; if (fread(&v, 8, 1, tf) == 1) vclock_ticks = (long)v; fclose(tf); }
+        vclock_tick_fd = open(tp, O_WRONLY | O_CREAT, 0644);
     }
     vclock_on = 1;
 }
