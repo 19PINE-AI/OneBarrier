@@ -165,6 +165,36 @@ the shim catches the libc time surface of any binary (a control counted exactly
 `LD_PRELOAD` overrides the exported symbols). Honest residual scope (RNG via raw
 `getrandom`, arbitrary multithreaded scheduling) documented in `interpose/README.md`.
 
+### Track B++++++++ — PostgreSQL: CRIU on the hardest app class (multi-process DB) (2026-06-23)
+
+`interpose/ob-criu-postgres-kvm.sh`. The hardest target: **unmodified PostgreSQL 14**
+— a multi-process database (postmaster + checkpointer/bgwriter/walwriter/autovacuum/
+stats/logical-rep workers), SysV-IPC + POSIX shared memory, WAL, on-disk data dir.
+CRIU 3.19 checkpoint/restore of the whole process tree, run in the KVM guest:
+```
+postmaster=112  socket=yes
+data before:  1000|500500
+CRIU dump: exit=0, 50 images (multi-process tree), pg-alive=no
+CRIU restore: exit=0
+data after restore: 1000|500500          <- byte-identical
+post-restore write: count=1001            <- server LIVE, accepts new INSERT
+RESULT-PG: PASS
+```
+Two guest-internal tricks (the app is unmodified): PG runs in a private **IPC
+namespace** (so CRIU can dump its SysV shm) and as the guest's PID-1 root with a
+faked `geteuid`=1000 shim (PG refuses root; the minimal initramfs's `setpriv` lacks
+`--reuid`). 50 CRIU images confirm the full multi-process tree was captured. This
+extends the general transparent-FT checkpoint mechanism from single-process apps to
+a real RDBMS.
+
+**Correction (important):** the earlier claim that "this sandbox's kernel blocks CRIU
+restore" was WRONG. CRIU **3.19 restores fine on the host directly** (verified on a
+trivial process and now PostgreSQL's prerequisites) — the segfault was *purely* the
+distro CRIU **3.16.1** vs kernel 6.8, reproducible and fixable independent of the
+sandbox. The KVM guest is still the clean room used for the PG run (to sidestep the
+sandbox's hostility to launching DB daemons under namespace wrappers), but CRIU
+itself was never sandbox-blocked — only version-blocked.
+
 ### Track B+++++++ — recovery TIME / availability of the unmodified-app path (2026-06-23)
 
 `interpose/ob-recovery-time.sh`. Recovery *correctness* was validated throughout;
