@@ -192,11 +192,26 @@ commit barrier (GATE A), so it is not the steady-state tax local logging implies
 realistic (non-pipelined) load (nginx) the whole interception layer is < 5%. The
 **deterministic scheduler is the one expensive piece**: its spin-based deterministic-
 turn gating serializes all critical sections and collapses throughput on a contended
-multithreaded server — so high-throughput serving uses the **single-worker** config
-(memcached `-t 1`, nginx `worker_processes 1`, redis single-threaded — exactly what
-the deterministic-recovery harnesses use), and `detsched` is the determinism tool
-for the multithreaded case, not a throughput path (a known DMT tradeoff: Kendo/
-dthreads/CoreDet report the same).
+multithreaded server.
+
+**The performant deterministic path is share-nothing sharding**, not `detsched`. Run
+N single-thread instances (deterministic by construction — one thread, so request
+order is whatever the fabric/replay supplies, no shared-memory races) and scale by
+processes, not threads. Measured on memcached (8×50k ops, 16 conns):
+
+| config | throughput | deterministic? |
+|---|---|---|
+| `-t 1` single-thread baseline | 342 k ops/s | ✅ (by construction) |
+| `-t 2` / `-t 4` / `-t 8` multithreaded | 575k / 821k / 1.24M ops/s (sub-linear, lock contention) | ✗ (needs `detsched` → collapses) |
+| `-t 1` + full libOS (vclock+capture) | 302 k ops/s (~10% FT overhead) | ✅ |
+| **4 × `-t 1` share-nothing shards** | **1.0 M ops/s aggregate — BEATS `-t 4`** | ✅ |
+
+So single-thread is NOT a throughput dead-end: sharded single-threaded instances
+have no lock contention, so 4 shards (1.0 M ops/s) exceed one `-t 4` process (821 k),
+stay deterministic, and pay only ~10% libOS overhead. This is how redis (single-
+threaded), nginx (share-nothing worker processes), and memcached-as-instances
+already scale. `detsched` remains the fallback for genuinely-shared mutable state, a
+known DMT tradeoff (Kendo/dthreads/CoreDet report the same). See `[[onebarrier-sharding-model]]`.
 
 ### Track B++++ — redis-internal RNG fixed + CRIU characterized (2026-06-22)
 
