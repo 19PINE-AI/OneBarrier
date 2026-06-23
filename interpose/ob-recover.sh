@@ -45,7 +45,11 @@ case "$APP" in
     ;;
   memcached)
     P1=11230; P2=11231; P3=11232
-    bcmd(){ echo "memcached -p $1 -U 0 -t 1 -m 64"; }
+    # -t 1 + disable the timer-driven maintenance threads (LRU maintainer/crawler,
+    # hash expansion, slab reassign) so state evolution is a pure function of the
+    # request stream + virtual clock — no real-time-driven background nondeterminism.
+    MC_DET="-o no_lru_crawler,no_lru_maintainer,no_hashexpand,no_slab_reassign"
+    bcmd(){ echo "memcached -p $1 -U 0 -t 1 -m 64 $MC_DET"; }
     lcmd(){ echo "$PRE $(bcmd "$1")"; }
     up(){ for i in $(seq 50); do printf 'version\r\n' | timeout 1 nc 127.0.0.1 "$1" 2>/dev/null | grep -q VERSION && return 0; sleep 0.2; done; return 1; }
     drive(){ for i in $(seq 6); do printf 'stats\r\nquit\r\n' | timeout 2 nc 127.0.0.1 "$1" 2>/dev/null | grep '^STAT time ' | tr -d '\r'; done; }

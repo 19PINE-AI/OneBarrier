@@ -165,6 +165,32 @@ the shim catches the libc time surface of any binary (a control counted exactly
 `LD_PRELOAD` overrides the exported symbols). Honest residual scope (RNG via raw
 `getrandom`, arbitrary multithreaded scheduling) documented in `interpose/README.md`.
 
+### Track B++++++ — memcached -t 1 bit-exact determinism: auxiliary threads (2026-06-23)
+
+`interpose/ob-memcached-deterministic.sh`. Even at `-t 1`, memcached spawns
+timer-driven maintenance threads (LRU maintainer/crawler, hash-expander, slab
+reassign — 7 threads total, one in `hrtimer_nanosleep`) that mutate shared LRU/hash
+state on a REAL-time schedule, so the bookkeeping evolves nondeterministically:
+```
+default -t 1:   lru_maintainer_juggles run A=233  run B=187   <- DIFFER (real-time driven)
++disable flags: (no maintainer thread)                         <- deterministic by construction
+```
+Fix: `-o no_lru_crawler,no_lru_maintainer,no_hashexpand,no_slab_reassign` (drops to
+3 threads: dispatcher + worker + idle logger, 0 timer-driven). Now state evolution
+is a pure function of the request stream + virtual clock. Verified with a full
+crash+replay recovery under an **LRU-eviction** workload (6000 keys into 2 MB, ~1416
+survive):
+```
+live      survivors=e66bad2561a40383 (1416)
+recovered survivors=e66bad2561a40383 (1416)   <- byte-identical across the crash
+RESULT: memcached -t 1 eviction state byte-identical across recovery ✅
+```
+These flags are now baked into the memcached launch in `ob-recover.sh`, so the
+production single-thread config is deterministic by construction (the share-nothing
+shard unit — see [[onebarrier-sharding-model]]). nginx (`worker_processes 1`) and
+redis (single-threaded) have no equivalent timer-driven maintenance worker; node's
+event loop is single-threaded. memcached was the one app that needed this.
+
 ### Track B+++++ — end-to-end PERFORMANCE / overhead of the full libOS (2026-06-23)
 
 `interpose/ob-perf.sh` — steady-state throughput/latency of UNMODIFIED apps under
