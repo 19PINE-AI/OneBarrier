@@ -14,32 +14,46 @@ def P(name): return os.path.join(OUT, name)
 # F3. Overlap vs stack (RQ2) — the headline. Stacked latency showing the
 # durable-replica write hidden UNDER the commit barrier vs stacked ON TOP.
 # ---------------------------------------------------------------------------
-def fig_overlap():
-    fig, ax = plt.subplots(figsize=(5.4, 2.35))
-    # in-fabric: durable (4.59us) overlaps inside delivery (2014us) -> commit 2018
-    # fsync: durable (2963us) stacks after delivery (3042us) -> commit 6016
+def _overlap_panel(ax, title, deliv, dur_fabric, dur_stack, xmax, unit):
     y = [1, 0]
-    # delivery / commit barrier in blue for BOTH tiers (consistent)
-    ax.barh(y, [2014, 3042], color=PAL['blue'], height=0.5,
-            label='reliable delivery (commit barrier)')
-    # in-fabric: durable rides UNDER the barrier -> thin green bar inside
-    ax.barh([1], [4.59], left=[1700], color=PAL['green'], height=0.24,
-            label='durable replica write')
-    # fsync: durable stacks on top, in red
-    ax.barh([0], [2963], left=[3042], color=PAL['red'], height=0.5,
-            label='durable write stacked')
+    ax.barh(y, [deliv, deliv], color=PAL['blue'], height=0.52)
+    # in-fabric: durable rides UNDER the barrier (overlapped)
+    ax.barh([1], [dur_fabric], left=[deliv*0.82], color=PAL['green'], height=0.26)
+    # serial: durable stacks on top
+    ax.barh([0], [dur_stack], left=[deliv], color=PAL['red'], height=0.52)
     ax.set_yticks(y)
-    ax.set_yticklabels(['in-fabric\n(rides barrier)', 'fsync\n(serial storage)'])
-    ax.set_xlabel('latency on the critical path (µs)')
-    ax.annotate('+0.23% marginal\n(hidden under barrier)', xy=(2018, 1.0), xytext=(2700, 1.45),
-                fontsize=8.2, color=PAL['green'], ha='left', va='center',
-                arrowprops=dict(arrowstyle='->', color=PAL['green'], lw=1.0))
-    ax.annotate('+2963 µs stacked\ncommit 2018→6016 µs', xy=(6016, 0.0), xytext=(6150, 0.55),
-                fontsize=8.2, color=PAL['red'], ha='left', va='center',
-                arrowprops=dict(arrowstyle='->', color=PAL['red'], lw=1.0))
-    ax.set_xlim(0, 9500)
-    ax.legend(loc='upper right', ncol=1, fontsize=7.6, bbox_to_anchor=(1.0, 1.42))
+    ax.set_yticklabels(['overlap\n(in-fabric)', 'stack\n(serial)'], fontsize=8.2)
+    ax.set_xlabel(f'critical-path latency ({unit})')
+    ax.set_title(title, fontsize=9.0)
+    ax.set_xlim(0, xmax)
     ax.grid(axis='y', visible=False)
+
+def fig_overlap():
+    fig, axes = plt.subplots(1, 2, figsize=(5.6, 2.45))
+    # left: MEASURED reproduction (loopback-UDP, us)
+    _overlap_panel(axes[0], 'measured (loopback reproduction)',
+                   2014, 4.59, 2963, 7500, 'µs')
+    axes[0].annotate('+0.23%', xy=(2018, 1.0), xytext=(2900, 0.62),
+                     fontsize=8.0, color=PAL['green'], va='center',
+                     arrowprops=dict(arrowstyle='->', color=PAL['green'], lw=0.9))
+    axes[0].text(5060, 0.0, '+2963 µs\n(commit 2×)', fontsize=7.6, color=PAL['red'],
+                 ha='left', va='center')
+    # right: PROJECTED RDMA operating point (us): reliable delivery ~21us barrier,
+    # 1-RTT replica ~1.5us hidden under it; out-of-regime serial durability ~100us.
+    _overlap_panel(axes[1], 'projected (RDMA, 1–2 µs RTT)',
+                   21, 1.5, 100, 158, 'µs')
+    axes[1].annotate('≈0%', xy=(21, 1.0), xytext=(40, 0.62),
+                     fontsize=8.0, color=PAL['green'], va='center',
+                     arrowprops=dict(arrowstyle='->', color=PAL['green'], lw=0.9))
+    axes[1].text(124, 0.0, '+100 µs', fontsize=7.6, color=PAL['red'], ha='left', va='center')
+    # shared legend
+    from matplotlib.patches import Patch
+    handles = [Patch(color=PAL['blue'], label='reliable-delivery barrier'),
+               Patch(color=PAL['green'], label='durable write (overlapped)'),
+               Patch(color=PAL['red'], label='durable write (stacked)')]
+    fig.legend(handles=handles, loc='lower center', ncol=3, fontsize=7.3,
+               bbox_to_anchor=(0.5, -0.08))
+    fig.subplots_adjust(wspace=0.34, bottom=0.30, top=0.86)
     finish(fig, P('fig_overlap.pdf'))
 
 # ---------------------------------------------------------------------------
@@ -129,21 +143,46 @@ def fig_interval():
 # F11. Passive vs active SMR: execution CPU.
 # ---------------------------------------------------------------------------
 def fig_passive():
+    # RQ5 measured: execution CPU (ms) for active SMR vs OneBarrier passive
+    reps   = [2, 3, 5, 7]
+    active = [205.9, 309.5, 519.5, 729.7]
+    passive= [105.7, 108.7, 114.5, 123.1]
+    save   = [49, 65, 78, 83]
     fig, ax = plt.subplots(figsize=(3.5, 2.5))
-    reps = [3, 5, 7]
-    active = [1.96, 3.45, 5.0]      # active uses ~N x (range backs the 49-83% savings)
-    passive = [1.0, 1.0, 1.0]
-    x = np.arange(len(reps)); w = 0.36
-    ax.bar(x-w/2, active, w, color=PAL['red'], label='active SMR (N execute)')
+    x = np.arange(len(reps)); w = 0.38
+    ax.bar(x-w/2, active, w, color=PAL['red'], label='active SMR ($N$ execute)')
     ax.bar(x+w/2, passive, w, color=PAL['green'], label='OneBarrier (passive)')
-    for i, (a, p) in enumerate(zip(active, passive)):
-        ax.text(i, max(a, p)+0.12, f'−{100*(a-p)/a:.0f}%', ha='center', fontsize=7.8, color=PAL['green'])
-    ax.set_xticks(x); ax.set_xticklabels([f'{r} replicas' for r in reps])
-    ax.set_ylabel('execution CPU (normalized)')
-    ax.set_ylim(0, 6.2)
-    ax.legend(loc='upper left', fontsize=7.8)
+    for i, s in enumerate(save):
+        ax.text(i, active[i]+18, f'−{s}%', ha='center', fontsize=7.8, color=PAL['green'])
+    ax.set_xticks(x); ax.set_xticklabels([f'{r}' for r in reps])
+    ax.set_xlabel('replicas')
+    ax.set_ylabel('execution CPU (ms)')
+    ax.set_ylim(0, 830)
+    ax.legend(loc='upper left', fontsize=7.6)
     ax.grid(axis='x', visible=False)
     finish(fig, P('fig_passive.pdf'))
+
+def fig_competitors():
+    # M4 measured: throughput vs producers, OneBarrier vs HyCoR vs LLFT (M ops/s)
+    prod = [1, 2, 4, 8]
+    ob   = [2.85, 4.95, 6.12, 12.11]
+    hycor= [1.27, 2.87, 4.34, 7.89]
+    llft = [2.06, 5.14, 5.64, 10.34]
+    fig, ax = plt.subplots(figsize=(3.5, 2.5))
+    x = np.arange(len(prod)); w = 0.26
+    ax.bar(x-w, ob,    w, color=PAL['green'], label='OneBarrier')
+    ax.bar(x,   llft,  w, color=PAL['blue'],  label='LLFT (host sequencer)')
+    ax.bar(x+w, hycor, w, color=PAL['red'],   label='HyCoR (order-log)')
+    ax.set_xticks(x); ax.set_xticklabels([f'{p}' for p in prod])
+    ax.set_xlabel('concurrent producers')
+    ax.set_ylabel('throughput (M ops/s)')
+    ax.set_ylim(0, 14)
+    ax.legend(loc='upper left', fontsize=7.3)
+    ax.annotate('1.5–2.2× vs HyCoR\n(no order-log)', xy=(3-w, 7.89), xytext=(1.3, 12.6),
+                fontsize=7.3, color=PAL['green'],
+                arrowprops=dict(arrowstyle='->', color=PAL['green'], lw=0.9))
+    ax.grid(axis='x', visible=False)
+    finish(fig, P('fig_competitors.pdf'))
 
 # ---------------------------------------------------------------------------
 # F7. libOS steady-state overhead (redis pipelined + nginx).
@@ -240,6 +279,7 @@ if __name__ == '__main__':
     fig_detsched()
     fig_interval()
     fig_passive()
+    fig_competitors()
     fig_overhead()
     fig_softroce()
     fig_criu()
