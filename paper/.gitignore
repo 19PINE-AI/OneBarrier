@@ -4,3 +4,4 @@
 *.bbl
 *.blg
 paper.pdf
+__pycache__/
