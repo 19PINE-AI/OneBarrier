@@ -43,24 +43,35 @@ fn main() -> std::io::Result<()> {
         p += len;
     }
 
+    // Replay every connection's stream in PARALLEL (one thread per connection) so
+    // recovery time is bounded by the slowest single connection, not the sum — and
+    // drain replies with a short idle timeout instead of a long fixed wait.
+    let handles: Vec<_> = order
+        .iter()
+        .map(|cid| {
+            let bytes = conns[cid].clone();
+            let target = target.clone();
+            std::thread::spawn(move || -> std::io::Result<usize> {
+                let mut s = TcpStream::connect(&target)?;
+                s.set_nodelay(true).ok();
+                s.write_all(&bytes)?;
+                s.flush()?;
+                s.set_read_timeout(Some(Duration::from_millis(25))).ok();
+                let mut buf = [0u8; 65536];
+                loop {
+                    match s.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(_) => {}
+                        Err(_) => break, // short idle: replies drained
+                    }
+                }
+                Ok(bytes.len())
+            })
+        })
+        .collect();
     let mut total_bytes = 0usize;
-    for cid in &order {
-        let bytes = &conns[cid];
-        total_bytes += bytes.len();
-        let mut s = TcpStream::connect(&target)?;
-        s.set_nodelay(true).ok();
-        s.write_all(bytes)?;
-        s.flush()?;
-        // Drain replies so the server isn't blocked on a full send buffer.
-        s.set_read_timeout(Some(Duration::from_millis(200))).ok();
-        let mut buf = [0u8; 4096];
-        loop {
-            match s.read(&mut buf) {
-                Ok(0) => break,
-                Ok(_) => {}
-                Err(_) => break, // timeout: replies drained
-            }
-        }
+    for h in handles {
+        total_bytes += h.join().unwrap()?;
     }
 
     println!(

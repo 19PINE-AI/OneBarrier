@@ -165,6 +165,28 @@ the shim catches the libc time surface of any binary (a control counted exactly
 `LD_PRELOAD` overrides the exported symbols). Honest residual scope (RNG via raw
 `getrandom`, arbitrary multithreaded scheduling) documented in `interpose/README.md`.
 
+### Track B+++++++ — recovery TIME / availability of the unmodified-app path (2026-06-23)
+
+`interpose/ob-recovery-time.sh`. Recovery *correctness* was validated throughout;
+this measures recovery *latency*. Capture an unmodified redis's request stream for N
+distinct-key writes, crash, and time `ob-replay` reconstructing state on a fresh
+instance. `ob-replay` now reconnects + replays all connections **in parallel** (was
+sequential with a 200 ms-per-connection drain → a 20× recovery-latency win):
+
+| requests | capture | live keys | recovered | replay time |
+|---:|---:|---:|---:|---:|
+| 10 k | 518 K | 9 998 | 9 998 ✓ | 35 ms |
+| 100 k | 5.1 M | 99 957 | 99 957 ✓ | 87 ms |
+| 500 k | 26 M | 498 751 | 498 751 ✓ | 269 ms |
+| 1 M | 51 M | 994 967 | 994 967 ✓ | 536 ms |
+
+**Linear** in log length (~0.5 ms / 1k requests, ~95 MB/s, ~1.9 M req/s) and the
+recovered key count **equals the live count (exact reconstruction)** — matches the
+engine recovery model (RQ8). End-to-end availability = checkpoint restore + tail
+replay: with a checkpoint every K requests (CRIU full-process ~tens of ms in the KVM
+guest, or app-native RDB), recovery is bounded to the post-checkpoint tail (e.g. a
+100 k-request tail ≈ 87 ms replay + restore → sub-100 ms downtime).
+
 ### Track B++++++ — memcached -t 1 bit-exact determinism: auxiliary threads (2026-06-23)
 
 `interpose/ob-memcached-deterministic.sh`. Even at `-t 1`, memcached spawns
