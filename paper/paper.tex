@@ -77,33 +77,35 @@
 Transparent fault tolerance---making an \emph{unmodified} server crash-recoverable
 with no code changes---has repeatedly failed to reach production, not because
 snapshotting is hard but because of three coupled costs that were all large at the
-millisecond operating point every prior system lived at: logging
-non-determinism (above all message order), coordinating a distributed consistent
-cut, and holding externally-visible output until its producing state is durable.
-The industry instead rewrote applications to externalize state---durable execution,
-exactly-once stream processing---winning mindshare but leaving the legacy fleet
-behind. We revisit the abandoned transparent path and show it becomes practical
-under two co-designed shifts. First, a user-space \emph{determinism libOS}
-(\texttt{LD\_PRELOAD}, no kernel or application changes) makes unmodified servers
+millisecond operating point every prior system lived at: logging non-determinism
+(above all message order), coordinating a distributed consistent cut, and holding
+externally-visible output until its producing state is durable. The industry instead
+rewrote applications to externalize state---durable execution, exactly-once stream
+processing---winning mindshare but leaving the legacy fleet behind. We revisit the
+abandoned transparent path and show that the verdict is operating-point-dependent: it
+becomes practical under two co-designed shifts, neither sufficient alone.
+
+The first, and most-measured, shift is a user-space \emph{determinism libOS}
+(\texttt{LD\_PRELOAD}, no kernel or application changes) that makes unmodified servers
 deterministically recoverable by virtualizing their residual local
 non-determinism---time, randomness, and thread scheduling---at a few-percent
-steady-state overhead; we demonstrate byte-identical recovery of stock Redis,
-Memcached, Nginx, Node.js, and a multi-process PostgreSQL. Second, routing those
-servers through a microsecond-scale in-network total-order reliable fabric
-(1Pipe) collapses all three coupled costs: the fabric \emph{is} the order, so the
-replay order-log vanishes; a timestamp-$T$ snapshot replaces the Chandy--Lamport
-cut; and the output-commit barrier \emph{coincides} with the fabric's
-reliable-delivery commit barrier, so the recovery log---replicated by scattering
-each input to the replicas in one RTT (1Pipe's native replication)---is durable
-within a barrier the system already pays for, and fault tolerance adds $\approx$0
-latency over the reliable-fabric baseline. We quantify the overlap (0.23\% marginal cost
-in reproduction; corroborated by real RDMA verbs at $\sim$1.5\,\textmu s over
-SoftRoCE), verify exactly-once and linearizability under injected crashes,
-machine-check the core protocols in TLA+, and position the result honestly against
-LLFT and HyCoR, which substantially anticipate the idea at the millisecond scale.
-The contribution is a realization-and-measurement: at the in-network-total-order,
-microsecond operating point, a long-dismissed technique becomes a byproduct of the
-communication fabric.
+steady-state overhead; we demonstrate \emph{byte-identical deterministic recovery} of
+stock Redis, Memcached, Nginx, and Node.js, and general CRIU checkpoint/restore of a
+multi-process PostgreSQL. The second shift is the operating point: routing those
+servers through a microsecond-scale in-network total-order reliable fabric (1Pipe)
+collapses all three coupled costs. The fabric \emph{is} the order, so the replay
+order-log vanishes; a timestamp-$T$ snapshot replaces the Chandy--Lamport cut; and the
+output-commit barrier \emph{coincides} with the fabric's reliable-delivery commit
+barrier, so the recovery log---replicated by scattering each input to the replicas in
+one RTT (1Pipe's native replication)---is durable within a barrier the system already
+pays for, so fault tolerance adds no round trip over the reliable-fabric baseline---a
+margin that is zero by construction, not a small measured number. We quantify the overlap ($0.23\%$ marginal cost in the loopback reproduction;
+corroborated by real RDMA verbs at $\sim$1.5\,\textmu s over SoftRoCE), verify
+exactly-once and linearizability under injected crashes, machine-check the core
+protocols in TLA+, and position the result honestly against LLFT and HyCoR, which
+substantially anticipate the idea at the millisecond scale. The contribution is a
+realization-and-measurement: at the in-network-total-order, microsecond operating
+point, a long-dismissed technique becomes a byproduct of the communication fabric.
 \end{abstract}
 
 \begin{center}
