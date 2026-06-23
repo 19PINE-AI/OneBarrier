@@ -664,101 +664,66 @@ the externally-visible inconsistency window.
 \section{Related Work}
 \label{sec:related}
 
-\paragraph{Transparent fault tolerance.} Whole-machine replication makes an
-unmodified workload fault-tolerant by replicating its execution. Remus
-\cite{cully2008remus} checkpoints a VM continuously and buffers output until the
-checkpoint is acknowledged; VMware FT~\cite{scales2010vmwareft} keeps a backup in
-lock-step. The output-hold and ordering costs motivated a line of optimizations:
-COLO~\cite{dong2013colo} releases output as long as primary and secondary responses
-agree; LLFT~\cite{zhao2013llft} tags messages with totally-ordered virtual time so an
-unmodified socket application replays with no separate order-log; ZZ
-\cite{wood2011zz} reduces replica count for BFT; Eve~\cite{kapritsos2012eve}
-executes-then-verifies to recover parallelism in SMR; Rex~\cite{guo2014rex} replays
-multi-threaded services by recording the lock-acquisition order; and Crane
-\cite{cui2015crane} makes Paxos transparent for server programs by combining input
-determinism with deterministic multithreading. Closest to us, HyCoR
-\cite{zhou2021hycor} and its peer-reviewed successor RRC~\cite{zhou2022rrc} provide
-checkpoint plus brief deterministic-replay fault tolerance for \emph{unmodified
-containers}, but still log non-determinism over a normal network. OneBarrier shares
-the transparency goal and differs in relocating both order and durability into an
-in-network fabric, removing the order-log entirely.
+\paragraph{Transparent fault tolerance.} Whole-machine replication makes
+unmodified workloads fault-tolerant: Remus~\cite{cully2008remus} checkpoints a VM
+and buffers output; VMware FT~\cite{scales2010vmwareft} runs a lock-step backup;
+COLO~\cite{dong2013colo} releases output while primary and backup agree; and Crane
+\cite{cui2015crane} makes Paxos transparent by combining input determinism with
+deterministic multithreading. Closest to us, LLFT~\cite{zhao2013llft} tags messages
+with totally-ordered virtual time so an unmodified socket application replays with
+no order-log, and HyCoR~\cite{zhou2021hycor} (with its peer-reviewed successor RRC
+\cite{zhou2022rrc}) gives checkpoint-plus-replay FT for unmodified containers while
+still logging non-determinism over a normal network. OneBarrier relocates both order
+and durability into an in-network fabric, removing the order-log entirely.
 
-\paragraph{Deterministic record-and-replay.} ReVirt~\cite{dunlap2002revirt} and its
-multiprocessor extension~\cite{dunlap2008smprevirt} log non-determinism for
-intrusion analysis; rr~\cite{ocallahan2017rr} and Castor~\cite{mashtizadeh2017castor}
-make record-replay deployable for debugging and FT. A body of work attacks the
-dominant cost---logging shared-memory access order---via speculation and offline
-inference: DoublePlay~\cite{veeraraghavan2011doubleplay}, Respec~\cite{lee2010respec},
-ODR~\cite{altekar2009odr}, PRES~\cite{park2009pres}, and Scribe~\cite{laadan2010scribe};
-R2~\cite{guo2008r2} replays at library interfaces. OneBarrier removes the
-order-log by sourcing order from the fabric and virtualizes only the residual
-\emph{local} non-determinism (time, randomness, single-thread scheduling) of an
-unmodified server.
+\paragraph{Deterministic replay.} ReVirt~\cite{dunlap2002revirt}, rr
+\cite{ocallahan2017rr}, and Castor~\cite{mashtizadeh2017castor} record
+non-determinism for replay; the dominant cost is logging shared-memory access order.
+OneBarrier sources order from the fabric and virtualizes only the residual
+\emph{local} non-determinism---time, randomness, and single-thread
+scheduling---of an unmodified server.
 
-\paragraph{State-machine replication and consensus.} The SMR
-approach~\cite{schneider1990smr} makes deterministic replicas agree by feeding them
-the same totally-ordered input; Paxos~\cite{lamport1998parttime,lamport2001paxossimple},
-Viewstamped Replication~\cite{oki1988vr,liskov2012vrrevisited}, Raft
-\cite{ongaro2014raft}, PBFT~\cite{castro1999pbft}, and Zab/ZooKeeper
-\cite{junqueira2011zab,hunt2010zookeeper} establish that order, against the
-impossibility of asynchronous consensus~\cite{fischer1985impossibility}; total-order
-broadcast is surveyed in~\cite{defago2004total}. OneBarrier is \emph{passive} SMR (one
-live replica plus log and snapshot) over an in-network order source.
+\paragraph{State-machine replication and in-network ordering.} SMR
+\cite{schneider1990smr} feeds deterministic replicas a totally-ordered input
+established by consensus (Paxos~\cite{lamport1998parttime}, Raft
+\cite{ongaro2014raft}). A recent line offloads ordering to the network for
+\emph{active} SMR---NOPaxos~\cite{li2016nopaxos}, Eris~\cite{li2017eris}, Derecho
+\cite{jha2019derecho}---using programmable switches~\cite{bosshart2014p4} and logical
+clocks~\cite{lamport1978time}. 1Pipe~\cite{li2021onepipe} instead provides scalable
+total-order \emph{communication}, which we repurpose as a \emph{passive}-FT
+substrate.
 
-\paragraph{In-network and network-offloaded ordering.} A recent line offloads
-ordering to the network for near-unreplicated-latency consensus: NOPaxos
-\cite{li2016nopaxos}, Speculative Paxos~\cite{ports2015specpaxos}, Eris
-\cite{li2017eris}, NetPaxos~\cite{dang2015netpaxos}, and Derecho~\cite{jha2019derecho}.
-These are active SMR; 1Pipe~\cite{li2021onepipe} instead provides scalable
-total-order \emph{communication}, which we repurpose as a passive-FT substrate.
-Programmable switches~\cite{bosshart2013rmt,bosshart2014p4} and logical clocks
-\cite{lamport1978time} underpin this regime.
+\paragraph{Durable execution and stream processing.} The industrial path rewrites
+applications to externalize state: durable-execution engines (Temporal
+\cite{temporal}, DBOS~\cite{skiadopoulos2021dbos}) and exactly-once stream
+processors (Flink~\cite{carbone2015flink}). OneBarrier targets the unmodified fleet
+this path leaves behind.
 
-\paragraph{Durable execution and exactly-once stream processing.} The dominant
-industrial path makes applications fault-tolerant by \emph{rewriting} them to
-externalize state: durable-execution engines---Temporal~\cite{temporal}, Restate
-\cite{restate}, and the database-oriented OS DBOS~\cite{skiadopoulos2021dbos}---and
-exactly-once stream processors---Flink~\cite{carbone2015flink} with asynchronous
-barrier snapshots~\cite{carbone2015snapshots}, MillWheel~\cite{akidau2013millwheel},
-Naiad~\cite{murray2013naiad}, and D-Streams~\cite{zaharia2013dstreams}. OneBarrier
-targets the unmodified fleet this path leaves behind.
+\paragraph{Checkpoint, deterministic multithreading, and RDMA.} CRIU~\cite{criu}
+checkpoints unmodified processes---we use it for bounded recovery---as do fast
+microVM snapshot systems~\cite{agache2020firecracker,ustiugov2021reap}. Kendo
+\cite{olszewski2009kendo} and dThreads~\cite{liu2011dthreads} make multithreading
+deterministic; their throughput cost on contended servers motivates our
+share-nothing sharding. The microsecond operating point is set by RDMA
+systems---FaRM~\cite{dragojevic2014farm}, whose in-memory-replication-vs-power-loss
+durability tradeoff we adopt, and eRPC~\cite{kalia2019erpc}.
 
-\paragraph{Checkpoint/restore and snapshot-restore.} CRIU~\cite{criu}, BLCR
-\cite{hargrove2006blcr}, and DMTCP~\cite{ansel2009dmtcp} checkpoint unmodified
-processes; we use CRIU for bounded, any-binary recovery. Fast microVM and serverless
-snapshot-restore---Firecracker~\cite{agache2020firecracker}, Catalyzer
-\cite{du2020catalyzer}, REAP~\cite{ustiugov2021reap}, FaaSnap~\cite{ao2022faasnap}---shares
-our interest in low-overhead state capture.
+\paragraph{Library OS and kernel-bypass I/O.} SocksDirect~\cite{li2019socksdirect}
+is the lineage of our user-space socket interception. A transparent libOS over an
+RDMA fabric must wait on completions without busy-polling a core per connection;
+FastWake~\cite{li2023fastwake} gives thread-per-connection RDMA servers
+polling-class latency \emph{while sharing cores} via fast interrupt-mode wakeup---the
+completion-wait mechanism that keeps our passive design's CPU cost and core-sharing
+(\S\ref{sec:threads}) intact at the microsecond operating point. Arrakis
+\cite{peter2014arrakis} and Demikernel~\cite{zhang2021demikernel} give applications
+fast datapaths.
 
-\paragraph{Deterministic multithreading.} Kendo~\cite{olszewski2009kendo}, CoreDet
-\cite{bergan2010coredet}, dThreads~\cite{liu2011dthreads}, Determinator
-\cite{aviram2010determinator}, Peregrine~\cite{cui2011peregrine}, and Parrot
-\cite{cui2013parrot} make multithreaded executions deterministic; their throughput
-cost on contended servers is precisely what motivates our share-nothing sharding.
-
-\paragraph{RDMA datacenter systems.} The microsecond operating point is set by RDMA
-storage and RPC systems: FaRM~\cite{dragojevic2014farm}, RAMCloud
-\cite{ongaro2011ramcloud,ousterhout2015ramcloud,rumble2014logmem}, HERD
-\cite{kalia2014herd}, FaSST~\cite{kalia2016fasst}, eRPC~\cite{kalia2019erpc}, Pilaf
-\cite{mitchell2013pilaf}, and DrTM~\cite{wei2015drtm}; FaRM/RAMCloud also frame the
-in-memory-replication-vs-power-loss durability tradeoff we adopt.
-
-\paragraph{Library OS and kernel-bypass I/O.} SocksDirect~\cite{li2019socksdirect} is
-the lineage of the user-space socket interception our libOS builds on; Arrakis
-\cite{peter2014arrakis}, IX~\cite{belay2014ix}, and Demikernel~\cite{zhang2021demikernel}
-give applications fast datapaths; Exokernel~\cite{engler1995exokernel}, gVisor
-\cite{gvisor}, Gramine/Graphene-SGX~\cite{tsai2017graphenesgx}, Unikraft
-\cite{kuenzer2021unikraft}, and OSv~\cite{kivity2014osv} are library-OS designs that,
-like us, interpose between an unmodified application and the kernel.
-
-\paragraph{Output commit, rollback recovery, clocks, and correctness.} Optimistic
-recovery and the output-commit problem originate with Strom and Yemini
-\cite{strom1985optimistic}; message-logging rollback-recovery protocols are surveyed
-in~\cite{elnozahy2002survey}. Synchronized clocks enable consistent snapshots and
-external consistency: Spanner/TrueTime~\cite{corbett2012spanner}, Huygens
-\cite{geng2018huygens}, and Sundial~\cite{li2020sundial}. We verify recovery against
-linearizability~\cite{herlihy1990linearizability} with a checker in the lineage of
-Jepsen/Knossos~\cite{kingsbury_knossos}.
+\paragraph{Output commit, clocks, and correctness.} Optimistic recovery and the
+output-commit problem originate with Strom and Yemini~\cite{strom1985optimistic};
+consistent distributed snapshots with Chandy and Lamport~\cite{chandy1985snapshots}.
+Synchronized clocks enable consistent snapshots and external consistency: Spanner/
+TrueTime~\cite{corbett2012spanner} and Huygens~\cite{geng2018huygens}. We verify
+recovery against linearizability~\cite{herlihy1990linearizability}.
 
 \section{Conclusion}
 
