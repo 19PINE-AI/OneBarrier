@@ -165,6 +165,39 @@ the shim catches the libc time surface of any binary (a control counted exactly
 `LD_PRELOAD` overrides the exported symbols). Honest residual scope (RNG via raw
 `getrandom`, arbitrary multithreaded scheduling) documented in `interpose/README.md`.
 
+### Track B+++++ — end-to-end PERFORMANCE / overhead of the full libOS (2026-06-23)
+
+`interpose/ob-perf.sh` — steady-state throughput/latency of UNMODIFIED apps under
+the libOS layers, decomposed by component (redis-benchmark, ApacheBench). Relative
+overhead vs the native baseline is the result (absolute rps is machine-dependent).
+
+| app / load | config | result |
+|---|---|---|
+| **redis** SET, 500k, c=50, **pipeline=16** | baseline | ~2.4–2.5 M rps |
+| | +virtual clock | within noise (≤ a few %) |
+| | +FT capture (request log) | **0–32%** slower — variable, dominated by the per-request `fwrite+fflush` (I/O-pressure dependent) |
+| | +full (vclock+RNG+ASLR-off) | within noise |
+| **nginx** ab, 100k, c=50 (1 worker) | baseline | ~61–64 k rps, p99 2 ms |
+| | +virtual clock | within noise (~2%), p99 2 ms |
+| | +FT capture | **< 5%**, p99 2 ms |
+| **DMT** 4 threads × 2 M lock ops | baseline | ~24 M locks/s |
+| | +detsched | **~3.2× slower** (7.6 M locks/s) |
+| **memcached -t 4**, 8 clients | baseline | ~0.7 M ops/s |
+| | +detsched | **>1000× slower** (48 k ops did not finish in 60 s; 448% CPU spinning) |
+
+**Read-out.** Time and RNG virtualization are effectively free (≤ few %); the FT
+request-capture cost is the simulator's synchronous local `fwrite` — in real
+OneBarrier the durable log is the fabric's 1-RTT replica write, which *overlaps* the
+commit barrier (GATE A), so it is not the steady-state tax local logging implies. On
+realistic (non-pipelined) load (nginx) the whole interception layer is < 5%. The
+**deterministic scheduler is the one expensive piece**: its spin-based deterministic-
+turn gating serializes all critical sections and collapses throughput on a contended
+multithreaded server — so high-throughput serving uses the **single-worker** config
+(memcached `-t 1`, nginx `worker_processes 1`, redis single-threaded — exactly what
+the deterministic-recovery harnesses use), and `detsched` is the determinism tool
+for the multithreaded case, not a throughput path (a known DMT tradeoff: Kendo/
+dthreads/CoreDet report the same).
+
 ### Track B++++ — redis-internal RNG fixed + CRIU characterized (2026-06-22)
 
 **redis 6 internal randomness — FIXED.** `SPOP`/`SRANDMEMBER` were nondeterministic
