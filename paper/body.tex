@@ -1,0 +1,127 @@
+% ===========================================================================
+% OneBarrier — body.tex  (STRUCTURE SKELETON; prose to be filled after the
+% framing is confirmed.  Each section lists the claims it makes and the
+% STATUS.md evidence it draws on, so writing is a fill-in, not a redesign.)
+% ===========================================================================
+
+\section{Introduction}
+% - Transparent FT (no app rewrite) keeps failing to ship. Why: 3 coupled costs
+%   (nondeterminism order-log; distributed cut; output-commit hold), all LARGE at
+%   the ms scale (Remus held output tens of ms).
+% - Industry chose the other path: rewrite apps (Temporal/DBOS/Restate; Flink).
+%   Won mindshare, not the legacy fleet (millions of LOC of stock servers).
+% - Insight: a total-order *reliable* fabric pre-pays for all three FT needs; at
+%   the us/RDMA operating point the cost *regime* changes -> FT ~ free.
+% - Two co-designed shifts (libOS + fabric). Honest scope up front (what is real
+%   vs projected; anticipated by LLFT/HyCoR).
+% - Contributions list (5-6 bullets).
+
+\section{Why Transparent FT Failed, and What Changed}
+% - The three costs in detail: Strom-Yemini output commit (TOCS'85); Remus
+%   (NSDI'08) output-hold; deterministic replay + the order-log; Chandy-Lamport.
+% - 1Pipe: in-network total order, 2PC reliable-delivery commit barrier, 1-RTT
+%   replication, RTT 1-2 us. [cite 1Pipe SIGCOMM'21]
+% - The operating-point argument (ms -> us changes which cost regime governs).
+%   LOAD-BEARING for novelty.  [PLAN sec 0-2]
+
+\section{Overview: Fault Tolerance as a Byproduct of the Fabric}
+% - Architecture figure: unmodified app -> libOS shim -> 1Pipe fabric (+ in-fabric
+%   RDMA replica = durability = 2PC phase-1).
+% - The coincidence, three parts:
+%   (a) fabric order => replay order-log vanishes;
+%   (b) timestamp-T snapshot => empty-channel cut replaces Chandy-Lamport
+%       (stronger: no in-flight channel state);
+%   (c) output-commit barrier coincides with the fabric 2PC commit barrier;
+%       the ONE new engineering idea: fold the durable-replica write into phase-1.
+% [PLAN sec 2, 4]
+
+\section{A Transparent Determinism libOS for Unmodified Servers}
+% THE BIG REAL CONTRIBUTION. The mechanism that makes "unmodified" credible.
+\subsection{The Determinism Boundary}
+% request-driven vs timer-driven nondeterminism; the boundary we found+closed.
+\subsection{Virtual Clock: Time Virtualization}
+% time = base + ticks/input-event; closes timer-driven desync; nginx Date header
+% byte-identical. OB_VCLOCK. [Track B+]
+\subsection{Randomness Virtualization}
+% getrandom seccomp user-notif trap; /dev/urandom via mount-ns deterministic file;
+% ASLR-off (setarch -R); RDRAND-disable (OPENSSL_ia32cap). redis SipHash/SPOP.
+% [Track B++, B++++]
+\subsection{Threads: Deterministic Scheduling vs.\ Share-Nothing Sharding}
+% Kendo deterministic logical clocks (correct, but collapses throughput on a
+% contended server); the practical answer = N single-thread shards
+% (deterministic by construction); 4 shards beat -t4. [Track B++, B+++++]
+\subsection{Process-State Checkpoint and Bounded Recovery}
+% CRIU full-process checkpoint (general, any binary); preserves the in-memory
+% virtual clock; bounds recovery to the post-checkpoint tail; multi-process
+% PostgreSQL. [Track B+++, B++++++++]
+\subsection{Output Suppression and Exactly-Once}
+% per-client (client,seq) high-water-mark; suppress re-emitted outputs on replay.
+% [M0]
+% (Short "engineering realities" para: LD_PRELOAD early-init; glibc symbol
+%  versioning (dlvsym GLIBC_2.3.2); memcached maintenance threads. Makes
+%  "unmodified" credible.)
+
+\section{Fault Tolerance over the Fabric}
+% - Deterministic replay WITHOUT an order-log (apply Delivered in msg_ts order).
+% - timestamp-T snapshot: uncoordinated, empty-channel; compute-side quiesce at T.
+% - Output-commit = 2PC phase-1 durability (the new idea, fully stated).
+% - Recovery: durable prefix + state-transfer catch-up; decentralized recovery cut.
+% [M0/M1, PLAN sec 4]
+
+\section{Implementation}
+% - OneBarrier engine: Rust, on ~/1Pipe ReliableHost fabric; KvStore state machine,
+%   durable ordered log + ts-T snapshot; 18 binaries, 31 tests.
+% - libOS shim: C, SocksDirect lineage; obpreload + librngdet + libdetsched.
+% - Formal: TLA+/TLC -- 1Pipe total order (3.5M states); OneBarrier exactly-once +
+%   no-lost-ack. [STATUS Implementation + Formal]
+
+\section{Evaluation}
+% Lead with the REAL libOS results, then the coincidence, then correctness/overhead.
+\subsection{FT Marginal Cost $\approx$ 0 (the make-or-break)}
+% RQ2: in-fabric 4.59us marginal (0.23%) vs fsync ~3ms stack + throughput collapse.
+% GATE A sim at the RDMA operating point; real RDMA verbs over SoftRoCE ~1.5us
+% (honest CPU-bound caveat -> overlap is RTT-bound, modeled in sim). [M2, GATE A]
+\subsection{Deterministic Recovery of Five Unmodified Servers}
+% byte-identical time/RNG across crash+gap (redis/memcached/nginx/node + engine);
+% end-to-end STATE recovery (redis TTLs; node random+timestamp sessions);
+% memcached eviction bit-exactness; PostgreSQL via CRIU. control runs differ.
+% [Track B+, B+++, B++++++, B++++++++]
+\subsection{Correctness under Fault}
+% Wing-Gong linearizability on a recovered unmodified server; exactly-once Jepsen
+% torture (191k acked, 0 lost / 0 torn). [Track B+++, M5]
+\subsection{Recovery Time and Availability}
+% linear in log length: 10k->35ms ... 1M->536ms; exact reconstruction; checkpoint
+% bounds it to the tail (sub-100ms for a 100k tail). [Track B+++++++]
+\subsection{Steady-State Overhead of the libOS}
+% time ~0-4%, RNG ~0%, FT capture ~5% (nginx) .. variable (redis P16); the
+% deterministic-scheduler tradeoff; share-nothing sharding recovers throughput
+% (4x -t1 shards = 1.0M ops/s > -t4). [Track B+++++]
+\subsection{Resource Cost and Competitors}
+% LLFT/HyCoR/Remus/CRIU head-to-head; passive vs active CPU (49-83% savings);
+% scale (3-9 replicas); snapshot-interval tradeoff; order: sequencer vs fabric.
+% [M4, RQ5-8]
+\subsection{Formal Verification}
+% TLC model-checked: 1Pipe total order (3.5M states); OneBarrier exactly-once +
+% no-lost-ack. [Formal]
+
+\section{What Is New: An Honest Reckoning}
+% The LLFT/HyCoR/NOPaxos/Eris/Derecho/Remus table. The kill-shots stated plainly.
+% What survives: realization + measurement + the libOS engineering + the
+% operating-point regime change. Candor as a strength. [PLAN sec 3]
+
+\section{Limitations and Scope}
+% - Simulated RDMA *latency* vs real verbs (SoftRoCE CPU-bound; no P4 hardware).
+% - Durability = f-of-k fail-stop, not power-loss-safe (FaRM/RAMCloud tradeoff).
+% - Share-nothing scope (shared-everything multithreading is the DMT frontier).
+% [PLAN sec 0, 5, 9]
+
+\section{Related Work}
+% Transparent FT (Remus/COLO/VMware-FT/LLFT/HyCoR); deterministic replay
+% (rr/Castor); network-offloaded order (NOPaxos/Eris/Derecho/Sundial/Huygens);
+% durable execution (Temporal/DBOS/Restate/Flink); CRIU & snapshot-restore
+% (REAP/FaaSnap/SnapStart); libOS & kernel-bypass IPC (SocksDirect/gVisor/Unikraft).
+
+\section{Conclusion}
+% At the in-network-total-order, microsecond operating point, transparent FT for
+% unmodified share-nothing servers becomes a byproduct of the communication
+% fabric -- realized as a libOS + fabric co-design, measured end to end.

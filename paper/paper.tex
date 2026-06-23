@@ -1,0 +1,119 @@
+\documentclass[11pt]{article}
+
+% Encoding
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+
+% Professional preprint style (adopted from the User-as-Code arXiv template).
+\usepackage{arxiv}
+
+% Content packages
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{subcaption}
+\usepackage{enumitem}
+\usepackage{natbib}
+\usepackage{xcolor}
+
+\usepackage{hyperref}
+\usepackage{url}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=arxivaccent,
+  citecolor=arxivaccent,
+  urlcolor=arxivaccent,
+  filecolor=arxivaccent,
+  breaklinks=true,
+}
+
+% --- listing styles (carried over from the template) ---
+\definecolor{codebg}{rgb}{0.95,0.95,0.97}
+\definecolor{codegreen}{rgb}{0.0,0.5,0.0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{codeblue}{rgb}{0.0,0.0,0.7}
+\definecolor{alertbg}{rgb}{1.00,0.96,0.94}
+\definecolor{alertred}{rgb}{0.70,0.10,0.10}
+
+\lstdefinestyle{cstyle}{
+    backgroundcolor=\color{codebg},
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    captionpos=b,
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{codeblue}\bfseries,
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    showstringspaces=false,
+    numbers=left, numbersep=5pt, frame=single, rulecolor=\color{codegray}, tabsize=4,
+}
+\lstdefinestyle{shellstyle}{
+    backgroundcolor=\color{codebg},
+    basicstyle=\ttfamily\footnotesize,
+    breaklines=true, language={}, showstringspaces=false,
+    numbers=none, frame=single, rulecolor=\color{codegray}, tabsize=2,
+}
+\lstset{style=cstyle}
+
+\title{OneBarrier: Transparent Fault Tolerance for Unmodified\\ Servers as a Byproduct of Total-Order Communication}
+
+\author{
+  Bojie Li \\
+  Pine AI
+}
+
+\date{}
+\runningtitle{OneBarrier: Transparent FT as a Byproduct of Total-Order Communication}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+% DRAFT abstract — to be finalized after the body. Captures the thesis + the
+% honest scope so reviewers know what is real vs projected.
+Transparent fault tolerance---making an \emph{unmodified} server crash-recoverable
+with no code changes---has repeatedly failed to reach production, not because
+snapshotting is hard but because of three coupled costs that were all large at the
+millisecond operating point every prior system lived at: logging
+non-determinism (above all message order), coordinating a distributed consistent
+cut, and holding externally-visible output until its producing state is durable.
+The industry instead rewrote applications to externalize state---durable execution,
+exactly-once stream processing---winning mindshare but leaving the legacy fleet
+behind. We revisit the abandoned transparent path and show it becomes practical
+under two co-designed shifts. First, a user-space \emph{determinism libOS}
+(\texttt{LD\_PRELOAD}, no kernel or application changes) makes unmodified servers
+deterministically recoverable by virtualizing their residual local
+non-determinism---time, randomness, and thread scheduling---at a few-percent
+steady-state overhead; we demonstrate byte-identical recovery of stock Redis,
+Memcached, Nginx, Node.js, and a multi-process PostgreSQL. Second, routing those
+servers through a microsecond-scale in-network total-order reliable fabric
+(1Pipe) collapses all three coupled costs: the fabric \emph{is} the order, so the
+replay order-log vanishes; a timestamp-$T$ snapshot replaces the Chandy--Lamport
+cut; and the output-commit barrier \emph{coincides} with the fabric's two-phase
+reliable-delivery commit barrier, so the durable-replica write rides under a
+barrier the system already pays for and fault tolerance adds $\approx$0 latency
+over the reliable-fabric baseline. We quantify the overlap (0.23\% marginal cost
+in reproduction; corroborated by real RDMA verbs at $\sim$1.5\,\textmu s over
+SoftRoCE), verify exactly-once and linearizability under injected crashes,
+machine-check the core protocols in TLA+, and position the result honestly against
+LLFT and HyCoR, which substantially anticipate the idea at the millisecond scale.
+The contribution is a realization-and-measurement: at the in-network-total-order,
+microsecond operating point, a long-dismissed technique becomes a byproduct of the
+communication fabric.
+\end{abstract}
+
+\begin{center}
+\small
+Code: \url{https://github.com/bojieli/OneBarrier}
+\end{center}
+\vspace{-0.4em}
+
+\input{body}
+
+\bibliographystyle{plainnat}
+\bibliography{reference}
+
+\end{document}
