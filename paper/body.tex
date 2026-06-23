@@ -53,9 +53,9 @@ the three costs over software-ordered, TCP-scale, hypervisor-logged
 \emph{millisecond} paths, where each was a large fraction of request latency. If
 instead all inter-process communication of \emph{share-nothing} servers is routed
 through an in-network total-order \emph{reliable} fabric---1Pipe~\cite{li2021onepipe},
-which establishes total order in a programmable switch and delivers reliably with a
-two-phase commit barrier at $1$--$2\,\mu s$ RTT---then the three costs do not merely
-shrink; they \emph{change structure}:
+which establishes total order in a programmable switch and delivers reliably via a
+two-phase commit barrier, over an RDMA fabric whose round-trip is $1$--$2\,\mu s$---then
+the three costs do not merely shrink; they \emph{change structure}:
 \begin{itemize}[leftmargin=1.4em,itemsep=1pt,topsep=2pt]
 \item the fabric \emph{is} the order, so the replay order-log vanishes;
 \item a timestamp-$T$ snapshot replaces the Chandy--Lamport cut---and is in fact
@@ -66,12 +66,15 @@ shrink; they \emph{change structure}:
   already pays for, and fault tolerance adds $\approx 0$ latency over the
   reliable-fabric baseline.
 \end{itemize}
-The single new engineering idea is the last point: fold the durable-replica write
-into phase~1 of 1Pipe's two-phase commit so that the phase-2 delivery
-acknowledgement doubles as the durability acknowledgement. At the millisecond
-scale this overlap saves little; at $1$--$2\,\mu s$ RTT it is the difference between
-fault tolerance being a tax on every reply and being a byproduct of the
-communication fabric.
+The single new engineering idea is the last point: OneBarrier replicates its
+recovery log using 1Pipe's native 1-RTT replication---scattering each input to the
+backup replicas at its total-order position---while the output-commit hold waits for
+the reliable-delivery commit barrier (1.5 RTT). The one-RTT replication completes
+\emph{within} that barrier, so the recovery state is durable by the time output may
+be released, and fault tolerance adds no round trip over the reliable-fabric
+baseline. At the millisecond scale this overlap saves little; at $1$--$2\,\mu s$ RTT
+it is the difference between fault tolerance being a tax on every reply and being a
+byproduct of the communication fabric.
 
 \paragraph{Honesty about scope, stated up front.} This is a
 realization-and-mea\-surement result, not a new primitive, and we are explicit about
@@ -134,13 +137,20 @@ displaced application-level replication.
 
 \paragraph{The 1Pipe fabric.} 1Pipe~\cite{li2021onepipe} provides \emph{scalable total
 order} communication in a datacenter: messages carry timestamps, an in-network
-(P4 programmable switch) min-reduce establishes a global order, and a FIFO gate at
-each receiver delivers in timestamp order. Reliable delivery is a two-phase commit:
-phase~1 scatters and durably stages, phase~2 commits once the barrier is agreed.
-At 1Pipe's operating point---RDMA RTT $1$--$2\,\mu s$, best-effort delivery
-$\sim\!10\,\mu s$, reliable delivery $+2$--$10\,\mu s$, recovery $50$--$500\,\mu s$,
-and 1-RTT in-fabric RDMA replication---the per-message ordering and reliable-commit
-costs are tens of microseconds, set by the fabric, not by software.
+(P4 programmable switch) barrier aggregation establishes a global order, and a FIFO
+gate at each receiver delivers in timestamp order. A \emph{scattering}---a group of
+messages to different destinations at one total-order position---has best-effort
+semantics ($0.5$ RTT plus barrier wait, adding up to $10\,\mu s$) or reliable
+semantics. Reliable delivery is a two-phase commit with in-network barrier
+aggregation: the first phase is end-to-end packet-loss recovery, and the second
+aggregates a \emph{commit barrier} that makes a scattering's delivery atomic
+(all-or-nothing); it takes $1.5$ RTT plus barrier wait, one RTT more than
+best-effort, adding up to $21\,\mu s$. 1Pipe also provides 1-RTT replication
+natively: a client scatters a log record to all replicas at a single total-order
+position, and each replica orders by (timestamp, source). At its operating
+point---RDMA RTT $1$--$2\,\mu s$, $80$\,M messages/s/host, replication in one RTT,
+and failure detection in tens of microseconds---the per-message ordering and
+reliable-commit costs are set by the fabric, not by software.
 
 \paragraph{The operating-point argument.} Our central claim is not that the idea is
 new but that the \emph{cost regime} is. The three costs that doomed transparent FT
@@ -161,16 +171,18 @@ runs over the determinism libOS, which intercepts its POSIX surface: sockets are
 routed to the 1Pipe fabric, and local non-determinism (time, randomness, thread
 order) is virtualized so that, given the same input sequence, the server's
 execution is a deterministic function of that sequence. The fabric supplies the
-input order and a reliable-delivery commit barrier; an in-fabric RDMA replica
-supplies durability as phase~1 of that barrier.
+input order and a reliable-delivery commit barrier; an in-fabric replica supplies
+durability, because each input is scattered to it in one RTT and is durable by the
+time the commit barrier passes.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=0.92\linewidth]{figures/fig_arch.pdf}
 \caption{OneBarrier: an unmodified server over the determinism libOS over the
-1Pipe fabric. The fabric supplies the order and the reliable two-phase commit
-barrier; an in-fabric RDMA replica supplies durability as phase~1 of that barrier;
-the libOS supplies local determinism, deterministic replay, and output suppression.}
+1Pipe fabric. The fabric supplies the order and the reliable-delivery commit barrier;
+the recovery log is replicated by scattering each input to an in-fabric replica
+(1Pipe's 1-RTT replication), durable by the time the commit barrier passes; the
+libOS supplies local determinism, deterministic replay, and output suppression.}
 \label{fig:arch}
 \end{figure}
 
@@ -204,14 +216,15 @@ Chandy--Lamport, because an order-preserving fabric has no in-flight channel sta
 The cut is uncoordinated: each node applies the same predicate independently.
 
 \paragraph{(c) Output-commit $=$ commit barrier.} A server's reply is withheld until
-the producing state is durable. In OneBarrier the durable-replica write is issued as
-phase~1 of the fabric's two-phase reliable-delivery commit, and the phase-2 barrier
-acknowledgement---which the fabric produces anyway to deliver the message
-reliably---doubles as the durability acknowledgement. The output-commit hold and the
-reliable-delivery barrier are the \emph{same} barrier. At $1$--$2\,\mu s$ RTT with
-1-RTT replication, the durable write completes \emph{under} the $\sim\!1.5$-RTT
-commit barrier, so FT's marginal latency over the reliable-fabric baseline is
-$\approx 0$.
+the producing state is durable. In OneBarrier the recovery log is replicated by
+scattering each input to the backup replicas at its total-order position---1Pipe's
+1-RTT replication---and the reply is held until the reliable-delivery commit barrier
+(the second phase of 1Pipe's 2PC, which makes the scattering atomic) passes the
+input's timestamp. The fabric crosses that $\sim\!1.5$-RTT barrier to deliver the
+input reliably \emph{regardless of fault tolerance}, and the 1-RTT replication
+completes within it. The output-commit hold and the reliable-delivery barrier are
+thus the \emph{same} barrier, so FT's marginal latency over the reliable-fabric
+baseline is $\approx 0$.
 
 What makes (c) work in practice is (a)+(b)+the libOS: the recovered replica is a
 deterministic function of the fabric-ordered input prefix up to the last durable
@@ -381,10 +394,11 @@ machine with a durable ordered log and timestamp-$T$ snapshots
 (Algorithm~\ref{alg:ft}). On the live path it applies fabric-delivered inputs in
 \texttt{msg\_ts} order, appends \texttt{(ts, op)} to the durable log, and---when the
 commit barrier passes a snapshot timestamp $T$---takes an uncoordinated
-empty-channel checkpoint (point (b) of \S\ref{sec:overview}). The durable-replica
-write that makes an output committable is issued as phase~1 of the fabric's
-reliable-delivery 2PC (point (c) of \S\ref{sec:overview}), so an output is released
-only once its producing input prefix is replicated. On recovery, a replacement
+empty-channel checkpoint (point (b) of \S\ref{sec:overview}). Each input is
+scattered to the backup replicas in one RTT (1Pipe's replication), and an output is
+released only once the reliable-delivery commit barrier has passed its producing
+input's timestamp---i.e., once that input prefix is replicated (point (c) of
+\S\ref{sec:overview}). On recovery, a replacement
 replica loads the latest snapshot, replays the durable log suffix in timestamp order
 (no order-log), and state-transfers any prefix it is missing from a surviving
 replica via the fabric's decentralized recovery-cut agreement; output suppression
@@ -398,7 +412,7 @@ via the per-client high-water-mark makes the replayed effects exactly-once.
 \Procedure{OnDeliver}{$(\mathit{ts}, \mathit{op})$}\Comment{fabric delivers in \texttt{ts} order}
   \State $\mathit{log}.\textsc{append}(\mathit{ts}, \mathit{op})$;\quad $\mathit{out} \gets \textsc{Apply}(\mathit{op})$
   \If{$\mathit{out}.\mathit{seq} > \mathit{hwm}[\mathit{out}.\mathit{client}]$}\Comment{exactly-once suppression}
-     \State \textsc{ReplicateThenRelease}($\mathit{out}$)\Comment{durable write $=$ 2PC phase-1}
+     \State scatter input to replicas (1 RTT); release $\mathit{out}$ at commit barrier
      \State $\mathit{hwm}[\mathit{out}.\mathit{client}] \gets \mathit{out}.\mathit{seq}$
   \EndIf
 \EndProcedure
@@ -707,12 +721,13 @@ owns.}
 What survives is not a new primitive but a realization-and-measurement: OneBarrier
 is the first system to show that routing unmodified share-nothing servers through a
 single in-network total-order reliable fabric makes transparent passive FT cost
-$\approx$ the total-order baseline---by folding the output-commit durable write into
-the fabric's commit barrier---and to demonstrate the enabling determinism libOS on
-five real unmodified servers including a multi-process database. The defense against
-the durability objection is the in-fabric RDMA replica: durability is supplied as
-phase~1 of the very barrier that delivers the message, so the coincidence is
-complete for the $f$-of-$k$ fail-stop guarantee we claim. The defense against the
+$\approx$ the total-order baseline---by replicating the recovery log within the
+fabric's reliable-delivery commit barrier---and to demonstrate the enabling
+determinism libOS on five real unmodified servers including a multi-process database.
+The defense against the durability objection is the in-fabric replica: each input is
+scattered to it in one RTT (1Pipe's native replication) and is durable by the time
+the very commit barrier that delivers the input reliably has passed, so the
+coincidence is complete for the $f$-of-$k$ fail-stop guarantee we claim. The defense against the
 ``just LLFT'' objection is the operating-point argument and its measurement: LLFT
 and the others lived at the millisecond scale where the technique's overhead was a
 large fraction of latency; the contribution is showing that at the microsecond,

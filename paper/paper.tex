@@ -92,10 +92,11 @@ Memcached, Nginx, Node.js, and a multi-process PostgreSQL. Second, routing those
 servers through a microsecond-scale in-network total-order reliable fabric
 (1Pipe) collapses all three coupled costs: the fabric \emph{is} the order, so the
 replay order-log vanishes; a timestamp-$T$ snapshot replaces the Chandy--Lamport
-cut; and the output-commit barrier \emph{coincides} with the fabric's two-phase
-reliable-delivery commit barrier, so the durable-replica write rides under a
-barrier the system already pays for and fault tolerance adds $\approx$0 latency
-over the reliable-fabric baseline. We quantify the overlap (0.23\% marginal cost
+cut; and the output-commit barrier \emph{coincides} with the fabric's
+reliable-delivery commit barrier, so the recovery log---replicated by scattering
+each input to the replicas in one RTT (1Pipe's native replication)---is durable
+within a barrier the system already pays for, and fault tolerance adds $\approx$0
+latency over the reliable-fabric baseline. We quantify the overlap (0.23\% marginal cost
 in reproduction; corroborated by real RDMA verbs at $\sim$1.5\,\textmu s over
 SoftRoCE), verify exactly-once and linearizability under injected crashes,
 machine-check the core protocols in TLA+, and position the result honestly against

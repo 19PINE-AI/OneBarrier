@@ -55,7 +55,7 @@ def fig_arch():
     # in-fabric replica callout, to the RIGHT of the fabric (no overlap)
     box(ax, 7.7, 0.95, 1.8, 1.0, 'RDMA replica\n(durability)', '#fdecea', PAL['red'], fs=7.2)
     arrow(ax, (7.3, 1.45), (7.7, 1.45), PAL['red'], lw=1.1)
-    ax.text(8.6, 0.62, 'durability = 2PC phase-1', ha='center', fontsize=6.6, color=PAL['red'])
+    ax.text(8.6, 0.62, 'durability = 1-RTT replication', ha='center', fontsize=6.6, color=PAL['red'])
     fig.savefig(P('fig_arch.pdf')); plt.close(fig); print('wrote fig_arch.pdf')
 
 # ---------------------------------------------------------------------------
