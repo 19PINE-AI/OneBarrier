@@ -40,6 +40,12 @@ static ssize_t (*real_recv)(int, void *, size_t, int) = NULL;
 static int (*real_accept)(int, struct sockaddr *, socklen_t *) = NULL;
 static int (*real_accept4)(int, struct sockaddr *, socklen_t *, int) = NULL;
 static int (*real_close)(int) = NULL;
+/* UDP server support: a bound datagram socket is an input source too (DNS, etc.).
+ * recvfrom/recvmsg on it tick the virtual clock just like a TCP connection read,
+ * so single-process UDP servers (e.g. dnsmasq) are deterministic on the UDP path. */
+static int (*real_bind)(int, const struct sockaddr *, socklen_t) = NULL;
+static ssize_t (*real_recvfrom)(int, void *, size_t, int, struct sockaddr *, socklen_t *) = NULL;
+static ssize_t (*real_recvmsg)(int, struct msghdr *, int) = NULL;
 
 /* Nondeterminism characterization (docs/PAPER-PLAN.md exp #5): the libc sources
  * of local nondeterminism the libOS must virtualize once the fabric has removed
@@ -153,6 +159,9 @@ static void ob_init(void) {
     if (!real_recv)    real_recv    = dlsym(RTLD_NEXT, "recv");
     if (!real_accept)  real_accept  = dlsym(RTLD_NEXT, "accept");
     if (!real_accept4) real_accept4 = dlsym(RTLD_NEXT, "accept4");
+    if (!real_bind)     real_bind     = dlsym(RTLD_NEXT, "bind");
+    if (!real_recvfrom) real_recvfrom = dlsym(RTLD_NEXT, "recvfrom");
+    if (!real_recvmsg)  real_recvmsg  = dlsym(RTLD_NEXT, "recvmsg");
     if (!real_close)   real_close   = dlsym(RTLD_NEXT, "close");
     if (!real_gettimeofday) real_gettimeofday = dlsym(RTLD_NEXT, "gettimeofday");
     if (!real_clock_gettime) real_clock_gettime = dlsym(RTLD_NEXT, "clock_gettime");
@@ -329,6 +338,30 @@ ssize_t recv(int fd, void *buf, size_t len, int flags) {
     ob_init();
     ssize_t n = real_recv(fd, buf, len, flags);
     capture(fd, buf, n);
+    return n;
+}
+
+/* A bound socket is a server input source; mark it so datagram receives tick. */
+int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
+    ob_init();
+    int r = real_bind(sockfd, addr, addrlen);
+    if (r == 0) mark_conn(sockfd);
+    return r;
+}
+
+ssize_t recvfrom(int fd, void *buf, size_t len, int flags,
+                 struct sockaddr *src_addr, socklen_t *addrlen) {
+    ob_init();
+    ssize_t n = real_recvfrom(fd, buf, len, flags, src_addr, addrlen);
+    capture(fd, buf, n);   /* a received datagram is an input event */
+    return n;
+}
+
+ssize_t recvmsg(int fd, struct msghdr *msg, int flags) {
+    ob_init();
+    ssize_t n = real_recvmsg(fd, msg, flags);
+    if (n > 0 && msg && msg->msg_iovlen >= 1)
+        capture(fd, msg->msg_iov[0].iov_base, n);  /* datagram in the first iovec */
     return n;
 }
 

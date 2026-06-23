@@ -17,6 +17,121 @@ as the autonomous research proceeds.
 | TB | Track B — transparent interception: `LD_PRELOAD` shim records an **unmodified** binary; `ob-replay` rebuilds state. Demoed on stock `redis-server` | **done** ✅ (scoped) |
 | TB+ | Track B+ — **virtual clock**: deterministic recovery of **5 unmodified apps** (redis, memcached, nginx, node + engine apps), time-dependent output **byte-identical across a real-time gap** via `ob-recover.sh` | **5/5 done** ✅ |
 | TB++ | Track B++ — **residual nondeterminism closed**: raw-`getrandom` seccomp determinizer (`librngdet.so`) → Node `Math.random()` byte-identical; Kendo-style deterministic scheduler (`libdetsched.so`) → multithreaded order determinism + `memcached -t 4` composes | **done** ✅ |
+| EXT | **Extensions** — generality beyond the 5 servers: message brokers (Redis Streams + Kafka partition model), SQLite (deterministic-replay DB), software Click NF (OpenClickNP), stateful microservice | **5/5 done** ✅ |
+
+## Extensions — application generality (2026-06-23)
+
+Four more application classes, chosen by the fit-test (deterministic-given-order +
+share-nothing/shardable + socket-based + bounded-output), each made crash-recoverable
+by the same mechanism. Paper §"Generality: Five More Applications" (`sec:ext`).
+
+**Brokers — Redis Streams (transparent).** `interpose/ob-redis-streams.sh`. Stock
+unmodified `redis-server` used as a Kafka-class stream broker. Auto-generated stream
+entry IDs (`<ms>-<seq>`, derived from the server clock) are **byte-identical across a
+crash + 3 s real gap** on 2 share-nothing shards; a no-libOS control gets different
+real-time IDs.
+```
+shard 0  live   : 1782196756604-0 … 1782196756611-0
+shard 0  replay : 1782196756604-0 … 1782196756611-0   <- byte-identical
+shard 0  control: 1782196761356-0 … 1782196761374-0   (real time, differs)
+RESULT: redis-streams broker DETERMINISTIC ✅
+```
+
+**Brokers — Kafka partition model (engine).** `interpose/ob-kafka-partitions.sh`. N
+share-nothing `ob-log` partitions, each a single-thread instance with its own durable
+log. A `kill -9`'d partition recovers **byte-identical** (count + content hash, offsets
+preserved, exactly-once). Publish throughput scales near-linearly with partitions:
+```
+P=1: 20157   P=2: 38417   P=4: 82637   P=8: 158427  msg/s   (7.9x at 8 partitions)
+partition 0  before=2000 882e70b56706a9ba  after-recovery=2000 882e70b56706a9ba ✅
+```
+
+**Database — SQLite (transparent, deterministic-replay).** `interpose/ob-sqlite.sh`.
+Unmodified `python3` + stdlib `sqlite3` (links libsqlite3). Rows whose values come from
+SQLite's own time (`strftime('now')`) and PRNG (`random()`, seeded from `/dev/urandom`)
+are **byte-identical by deterministic replay** across a crash + gap; control differs in
+both. **First non-CRIU database result** (Postgres is checkpoint-only).
+```
+live    : 8|1782197594.14.292|b4181887ecf1  9|1782197594.14.293|53d7fd5a8e51
+replay  : 8|1782197594.14.292|b4181887ecf1  9|1782197594.14.293|53d7fd5a8e51   <- identical
+control : 8|1782197600.20.161|36f695971716  9|...                              (differs)
+RESULT: SQLite DB state (time- AND RNG-derived rows) byte-identical across recovery ✅
+```
+
+**Network function — software Click NF (transparent, OpenClickNP).**
+`interpose/ob-clicknf.sh` + `interpose/clicknf/ob_clicknf.cpp` (built against
+`~/OpenClickNP/runtime/include`, the SIGCOMM'16 ClickNP lineage). A stateful L4
+load-balancer with connection tracking (OpenClickNP `FlowCache` learning table + L4LB
+hash) on the host CPU, fed packets over a socket so the virtual clock ticks per packet.
+The recovered flow table — per-flow backend **affinity** AND conntrack **last-seen**
+timestamps — is **byte-identical** across a crash; control's timestamps differ (the
+FTMB/Pico stateful-middlebox-FT problem, solved transparently).
+```
+live   table tail: 59|59|3|1782198254909343964
+replay table tail: 59|59|3|1782198254909343964   <- byte-identical (affinity + conntrack ts)
+control table tail: 59|59|3|1782198260147165207  (real time, ts differs)
+RESULT: Click NF flow table byte-identical across recovery ✅
+```
+
+**Microservice — order/checkout (transparent).** `interpose/ob-microservice.sh`. Stock
+`python3` http.server stateful order service. Across a crash: **exactly-once** (50/50
+orders, exact running total, no lost/dup) AND the order book — including the random
+order ids and timestamps durable-execution (Temporal/DBOS) forces you to externalize —
+recovers **byte-identical**; control differs.
+```
+exactly-once: orders=50 (expected 50), running_total=2595
+live   last order: 50|e54c9cea3668|1782198374.888142|83|2595
+replay last order: 50|e54c9cea3668|1782198374.888142|83|2595   <- byte-identical
+control last order: 50|1121dd2c0c34|1782198380.905453|83|2595  (real time + urandom, differs)
+RESULT: microservice order book byte-identical + exactly-once ✅
+```
+
+**Database — MySQL/MariaDB (CRIU checkpoint path).** `interpose/ob-criu-mariadb.sh`.
+The general any-binary checkpoint path on a SECOND shared-everything DB. Unlike
+PostgreSQL (multi-PROCESS tree + SysV shm → needs an IPC namespace + the KVM clean
+room), MariaDB is a single multi-THREADED process with no SysV shm, so CRIU 3.19
+checkpoints/restores it directly on the host (after disabling InnoDB native AIO, which
+CRIU cannot dump, and unmounting the sandbox's parent-less `binfmt_misc`). Checkpoint-
+only regime (no order-log-free replay — a shared-everything DB is not a replay
+candidate). Together with Postgres this shows the checkpoint path covers BOTH DB
+architectures.
+```
+mariadbd pid=4082139 threads=13
+data before : 1000  500500  3510254912
+dump ok (pid gone: yes)
+data after  : 1000  500500  3510254912     <- byte-identical across CRIU C/R
+post-restore write: count=1001 (server LIVE)
+RESULT-MARIADB: PASS ✅
+```
+Note: host-direct CRIU first failed with `mnt: No parent found for mountpoint
+.../binfmt_misc` — the same sandbox mount artifact that drove the Postgres run into
+the KVM guest; unmounting binfmt_misc clears it. The KVM-CRIU harness
+(`ob-criu-kvm.sh` base) remains the robust, sandbox-independent vehicle for any
+shared-everything server.
+
+**Broker — Mosquitto MQTT (transparent, deterministic replay).** `interpose/ob-mqtt.sh`.
+Stock single-threaded mosquitto 2.0. Retained-message store recovers byte-identical by
+replaying the publish stream; broker uptime ($SYS/broker/uptime, virtual clock) is
+event-count-deterministic. QoS-1 (synchronous PUBACK) keeps the per-event ticks
+deterministic. `live uptime=4 seconds == replay`, `control uptime=0 seconds` (real
+time). Third broker, IoT angle.
+
+**DNS — dnsmasq (transparent) + a libOS UDP enhancement.** `interpose/ob-dns.sh`.
+Stock dnsmasq caching resolver. Its time-dependent output is the cached-record TTL,
+which counts DOWN with the clock; under the virtual clock it counts input events, so
+the remaining TTL is deterministic. `live TTL=3597 == replay`, `control TTL=3600` (real
+time). **Required a libOS change**: `obpreload.c` now hooks `bind`/`recvfrom`/`recvmsg`
+so UDP datagram reception ticks the virtual clock (DNS is UDP; dnsmasq handles UDP in
+its single main process — the TCP path forks per query and resets the per-process tick
+counter, so UDP is the deterministic path). All 9 prior apps re-verified — no regression
+from the UDP hooks.
+
+**Web servers — lighttpd + HAProxy (transparent, deterministic replay).**
+`interpose/ob-webdate.sh <lighttpd|haproxy>`. Same Date:-header axis as Nginx: the HTTP
+Date header is formatted from the server clock, byte-identical across crash+gap under
+the virtual clock, control differs. lighttpd `08:41:57 == replay` vs control `08:42:02`;
+HAProxy `08:43:29 == replay` vs control `08:43:35`. (HAProxy needs the apt-installed
+system service stopped, and an explicit `hdr date "%[date(0),http_date]"`.)
 
 ## Reproducible results
 

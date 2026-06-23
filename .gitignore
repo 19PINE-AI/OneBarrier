@@ -12,3 +12,6 @@ Cargo.lock.bak
 spec/states/
 spec/*_TTrace_*
 interpose/*.so
+
+# compiled Click NF binary (source is ob_clicknf.cpp)
+interpose/clicknf/ob_clicknf
