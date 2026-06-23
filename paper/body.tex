@@ -224,8 +224,9 @@ replicated,'' which the fabric already does.
 The fabric supplies order; the libOS must supply everything else needed for an
 \emph{unmodified} binary to replay deterministically. This section is the
 mechanism that makes ``transparent'' real. The libOS is three composable
-\texttt{LD\_PRELOAD} libraries totalling a few hundred lines of C, XX\cite{li2019socksdirect} kernel-bypass lineage; it requires no kernel module
-and no application change.
+\texttt{LD\_PRELOAD} libraries totalling $\sim$900 lines of C, in the
+SocksDirect~\cite{li2019socksdirect} kernel-bypass lineage; it requires no kernel
+module and no application change.
 
 \subsection{The determinism boundary}
 Once message order is external, a server's remaining non-determinism is
@@ -287,8 +288,9 @@ where a control with the real device differs entirely.
 \subsection{Threads: deterministic scheduling vs.\ share-nothing sharding}
 \label{sec:threads}
 For a multi-threaded server the OS chooses the order threads enter critical
-sections, so shared-state evolution is non-deterministic. KEEP{olszewski2009kendo} deterministic scheduler: a thread may take a top-level lock
-only when its logical clock is the global minimum, making the interleaving a
+sections, so shared-state evolution is non-deterministic. We implemented a
+Kendo-style~\cite{olszewski2009kendo} deterministic scheduler: a thread may take a
+top-level lock only when its logical clock is the global minimum, making the interleaving a
 function of the clocks rather than of OS timing. It is correct---a 4-thread
 microbenchmark's critical-section order is identical across runs where it otherwise
 varies---but it serializes critical sections and \emph{collapses throughput} on a
@@ -375,10 +377,10 @@ storage.
 \section{Implementation}
 \label{sec:impl}
 
-The OneBarrier engine is $\sim$6\,k lines of Rust over the \texttt{ReliableHost}
+The OneBarrier engine is $\sim$4.8\,k lines of Rust over the \texttt{ReliableHost}
 fabric of an open 1Pipe reproduction, with a key/value state machine, a durable
 ordered log, timestamp-$T$ snapshots, exactly-once output suppression, and crash
-recovery; it ships 18 binaries (servers, benchmarks, fault injectors, checkers) and
+recovery; it ships 19 binaries (servers, benchmarks, fault injectors, checkers) and
 31 passing tests. The libOS is three \texttt{LD\_PRELOAD} C libraries
 (\texttt{libobpreload} for sockets/time/capture, \texttt{librngdet} for the seccomp
 randomness trap, \texttt{libdetsched} for deterministic scheduling). We
