@@ -380,10 +380,13 @@ rides on the fabric: 1Pipe's failure detector (tens of microseconds) excises a d
 and the survivors' commit barrier resumes over the reduced membership; with $k\!=\!3$ a
 mid-stream crash leaves survivors at the exact expected state and the victim recovers its
 prefix and catches up. Recovery converges only while replay outruns the live stream, so a
-naive replay would livelock at peak load; the recovering replica instead uses the
-fabric's barrier-hold as backpressure until it reaches the live cut---a design property of
-the engine, not a regime we measure (\S\ref{sec:eval-time}). Automated
-primary-promotion / view-change is left to a production layer (\S\ref{sec:limits}).
+naive replay would livelock once the live rate reaches replay capacity; the recovering
+replica instead uses the fabric's barrier-hold as backpressure, which roughly doubles the
+live rate a recovery can outrun (Figure~\ref{fig:recovery_load}, a closed-form catch-up
+model). The real engine's recovery \emph{under concurrent client load} is exercised by the
+crash-injection test of \S\ref{sec:eval-correct}; a real-hardware saturation sweep remains
+future work. Automated primary-promotion / view-change is likewise left to a production
+layer (\S\ref{sec:limits}).
 
 \begin{algorithm}[t]
 \small
@@ -542,8 +545,8 @@ regime; what it establishes is the \emph{structure}---ride versus stack---not a 
 number. That the structure carries to the microsecond operating point follows by
 construction (\S\ref{sec:overview}) and is corroborated two ways: a discrete-event model
 at 1Pipe's parameters, whose FT-overlap tail is indistinguishable from the reliable-fabric
-baseline at every load (Appendix~\ref{app:model}), and real RDMA verbs whose per-operation
-latency sits in the assumed band (Appendix~\ref{app:eval}). A hardware RDMA/P4 testbed
+baseline at every load (Figure~\ref{fig:loadsweep}, Appendix~\ref{app:model}), and real
+RDMA verbs whose per-operation latency sits in the assumed band (Appendix~\ref{app:eval}). A hardware RDMA/P4 testbed
 would put a direct number on the avoided cost; the coincidence is structural and does not
 depend on one.
 
@@ -756,8 +759,9 @@ reachable states with no violation. \texttt{OneBarrierEngine} models the replay
 engine and checks two invariants under arbitrary crash/recover interleavings:
 \textsc{ExactlyOnce} (each acknowledged client write is applied to the recovered
 state exactly once, via the per-client high-water-mark) and \textsc{NoLostAck}
-(every acknowledged write is present after recovery). The specifications are in the
-artifact under \texttt{spec/}.
+(every acknowledged write is present after recovery). Both specifications are in the
+artifact under \texttt{spec/} (\texttt{OnePipeTotalOrder.tla} and
+\texttt{OneBarrierEngine.tla}, each with its TLC \texttt{.cfg}).
 
 \section{Discrete-Event Model of the Barrier Overlap}
 \label{app:model}
@@ -794,14 +798,32 @@ recovery-log scatter (present only under FT), and commit/release---with service 
 Table~\ref{tab:model}. We compare the reliable-fabric baseline (no FT) against OneBarrier
 (with the scatter) under identical Poisson arrivals. Across the sweep, OneBarrier's
 commit-latency distribution, tail included, is indistinguishable from the baseline at
-every $\lambda$, because the scatter completes inside the barrier; the serial-durability
-point stacks and its tail diverges as load rises. This reproduces, at the microsecond
+every $\lambda$ (Figure~\ref{fig:loadsweep}), because the scatter completes inside the
+barrier; the serial-durability point stacks and its tail diverges as load rises. This reproduces, at the microsecond
 point, the ride-vs-stack structure measured on the millisecond loopback fabric
 (Table~\ref{tab:rq2}, Figure~\ref{fig:overlap}), with load-bearing inputs corroborated by
-the SoftRoCE verbs (Figure~\ref{fig:softroce}). What it cannot capture---and only a P4/RDMA
-testbed would settle (\S\ref{sec:limits})---is switch-level queueing and barrier-aggregation
-contention; we present it as corroboration of a structural identity, not a substitute for
-hardware. The simulator and parameter file are in the artifact under \texttt{spec/model/}.
+the SoftRoCE verbs (Figure~\ref{fig:softroce}).
+
+\paragraph{Calibration against the real engine.} So that the RDMA projection rests on a
+model checked where we \emph{can} measure rather than on assertion, \texttt{ob-calibrate}
+feeds the simulator the engine's measured loopback latencies and tests two things. First,
+the additive structure: at matched load the simulator reproduces the engine's in-fabric
+(overlap) commit latency to within $\sim$$0.1\%$---the durability marginal is absorbed,
+exactly as claimed---while the serial-fsync tier stacks, and is in fact \emph{worse} than
+the additive estimate because the serial write head-of-line-blocks the executor, a
+serialization that only sharpens the out-of-regime verdict. Second, and more telling, the
+queue dynamics: the simulator predicts the fsync tier saturates at
+$1/\textrm{fsync}\!\approx\!340$\,ops/s, and the real engine's commit latency indeed holds
+near its floor below $\sim$$300$\,ops/s and diverges past $\sim$$370$\,ops/s---the
+predicted knee, reproduced on real software. The simulator thus extrapolates a queueing
+model validated against the engine; only the absolute RDMA latencies (Table~\ref{tab:model})
+are substituted.
+
+What the model cannot capture---and only a P4/RDMA testbed would settle
+(\S\ref{sec:limits})---is switch-level queueing and barrier-aggregation contention; we
+present it as corroboration of a structural identity, not a substitute for hardware. The
+simulator is the \texttt{ob-sim} binary (crate \texttt{onebarrier}, \texttt{sim.rs};
+Table~\ref{tab:repro}).
 
 \section{Additional Evaluation Detail}
 \label{app:eval}
@@ -852,7 +874,11 @@ int clock_gettime(clockid_t c, struct timespec *t) {
 and CRIU cost versus image size are in Figure~\ref{fig:recovery} (body). Under fault
 (\S\ref{sec:eval-correct}), $191{,}073$ acknowledged writes survived recovery with $0$
 lost and $0$ torn, and the Wing--Gong verdict is rendered on the $33$-operation
-contended-register history including the post-recovery read.
+contended-register history including the post-recovery read. Determinism is robust rather
+than a lucky single run: across $25$ independent record/crash/replay trials of redis (TTL
+state) and $8$ of Node.js (session state derived from \texttt{Math.random()} \emph{and}
+\texttt{Date.now()}), the recovered state was byte-identical to live in \emph{every} trial
+while a no-libOS control diverged in every trial (\texttt{ob-robust}).
 
 \paragraph{Recovery time and steady-state cost.} Recovery is affine in replayed log length
 and bounded by checkpointing (Figure~\ref{fig:rectime}); steady-state libOS overhead is a
@@ -899,8 +925,31 @@ sub-linear only because shards and load generator contend for one host's cores a
 \label{fig:threads}
 \end{figure}
 
+\paragraph{Recovery under sustained load.} A recovering replica restores its snapshot and
+replays the durable log forward to the live cut, converging only while replay outruns the
+live stream. Figure~\ref{fig:recovery_load} is the closed-form catch-up model
+(\texttt{ob-recovery}): plain replay livelocks once the live rate reaches replay capacity,
+while the fabric's barrier-hold backpressure roughly doubles the live rate a recovery can
+outrun. This is a model, labelled as such; the real engine's recovery \emph{under
+concurrent client load} is measured by the crash-injection test
+(\S\ref{sec:eval-correct}), and a real-hardware saturation sweep remains future work.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.6\linewidth]{figures/fig_recovery_load.pdf}
+\caption{Recovery time vs.\ sustained live load (catch-up model, \texttt{ob-recovery}).
+Plain replay livelocks once the live rate reaches replay capacity ($R_{live}\!\geq\!
+R_{replay}$); the fabric's barrier-hold backpressure throttles senders to the recovering
+node and roughly doubles the load a recovery can outrun while keeping recovery time
+bounded.}
+\label{fig:recovery_load}
+\end{figure}
+
 \paragraph{The barrier overlap.} Figure~\ref{fig:overlap} renders the ride-versus-stack
-structure of Table~\ref{tab:rq2}, and Figure~\ref{fig:softroce} the real-\texttt{ibverbs}
+structure of Table~\ref{tab:rq2}; Figure~\ref{fig:loadsweep} sweeps offered load at the
+RDMA operating point and shows the FT-overlap tail coincident with the reliable baseline
+across the whole range while the serial tier's throughput ceiling collapses
+$\sim$$6000\times$; and Figure~\ref{fig:softroce} gives the real-\texttt{ibverbs}
 per-operation latencies that anchor the RDMA projection.
 
 \begin{figure}[h]
@@ -926,6 +975,21 @@ $\sim$1.5\,\textmu s and an RC round-trip in $\sim$11.8\,\textmu s---the per-op 
 sits in 1Pipe's $1$--$2\,\mu s$ operating point. SoftRoCE is CPU-bound, so it confirms
 the per-operation latency regime rather than the RTT-bound overlap.}
 \label{fig:softroce}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.97\linewidth]{figures/fig_loadsweep.pdf}
+\caption{Load sweep at the RDMA operating point (discrete-event model, \texttt{ob-sim}).
+(a) p99.9 commit latency vs.\ offered throughput: the FT-overlap tier (durability rides
+the commit barrier) is \emph{coincident} with the reliable-1Pipe baseline across the
+entire load range and into the p99.9 tail---fault tolerance is marginal-cost-$\approx$0
+not at one operating point but at \emph{every} load up to the apply-bound knee. (b) The
+serial-fsync tier never enters the microsecond regime: its throughput ceiling is
+fsync-bound ($1/\textrm{fsync}$) against the overlap tier's apply-bound ceiling
+($1/\textrm{apply}$), a $\sim$$6000\times$ collapse---the output-hold failure mode that
+sank Remus, quantified across load rather than at a single point.}
+\label{fig:loadsweep}
 \end{figure}
 
 \paragraph{Resource cost against competitors.} OneBarrier writes no order-log where HyCoR
@@ -1101,7 +1165,9 @@ that must differ, and the engine results are guarded by named unit tests.
 \toprule
 result (section) & command \\
 \midrule
-FT overlap, RQ2 (\S\ref{sec:eval-overlap}) & \texttt{ob-bench} \\
+FT overlap, RQ2 loopback (\S\ref{sec:eval-overlap}) & \texttt{ob-bench} \\
+discrete-event model + load sweep (\S\ref{sec:eval-overlap}, App.~\ref{app:model}) & \texttt{ob-sim} \\
+model calibration vs.\ real engine (App.~\ref{app:model}) & \texttt{ob-calibrate} \\
 real RDMA verbs (\S\ref{sec:eval-overlap}) & \texttt{ob-rdma-softroce.sh} \\
 5-app recovery (\S\ref{sec:eval-recovery}) & \texttt{ob-recover.sh all} \\
 end-to-end state recovery & \texttt{ob-state-recovery.sh all} \\
@@ -1110,6 +1176,8 @@ redis-internal RNG & \texttt{ob-redis-rng.sh} \\
 PostgreSQL CRIU (\S\ref{sec:eval-recovery}) & \texttt{ob-criu-postgres-kvm.sh} \\
 correctness under fault (\S\ref{sec:eval-correct}) & \texttt{ob-app-jepsen} \\
 recovery time (\S\ref{sec:eval-time}) & \texttt{ob-recovery-time.sh} \\
+recovery vs.\ load, backpressure (App.~\ref{app:eval}) & \texttt{ob-recovery} \\
+determinism robustness, $N$ trials (App.~\ref{app:eval}) & \texttt{ob-robust.sh <app> <N>} \\
 libOS overhead, sharding (\S\ref{sec:eval-overhead}) & \texttt{ob-perf.sh} \\
 deterministic scheduling (\S\ref{sec:threads}) & \texttt{det-mt.sh} \\
 competitors, M4 (\S\ref{sec:eval-compete}) & \texttt{ob-baselines} \\

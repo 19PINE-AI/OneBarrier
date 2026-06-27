@@ -8,6 +8,27 @@ use onebarrier::sim::{simulate, Mode, SimParams};
 fn main() {
     let base = SimParams { rtt_us: 2.0, barrier_us: 2.0, apply_us: 0.5, fsync_us: 3000.0, requests: 300_000, ..Default::default() };
 
+    // `ob-sim csv` emits the fine-grained latency-vs-throughput sweep used by
+    // Figure fig_loadsweep: each tier is swept across offered load and goes
+    // vertical at its OWN saturation throughput (overlap/baseline at the
+    // apply-bound knee, fsync at ~1/6000th of it). Plotted log-log so the
+    // unstable region is a wall, not a degenerate number.
+    if std::env::args().any(|a| a == "csv") {
+        println!("offered_load,throughput_ops_s,baseline_p999_us,overlap_p999_us,fsync_p999_us");
+        let n = 48;
+        let (lo, hi) = (5e-5_f64, 0.97_f64);
+        for i in 0..n {
+            let load = lo * (hi / lo).powf(i as f64 / (n - 1) as f64);
+            let p = SimParams { offered_load: load, requests: 120_000, ..base };
+            let thr = load / p.apply_us * 1.0e6; // arrival rate -> ops/s
+            let b = simulate(&p, Mode::ReliableBaseline).p999_us;
+            let o = simulate(&p, Mode::FtOverlap).p999_us;
+            let f = simulate(&p, Mode::FtFsync).p999_us;
+            println!("{load:.6},{thr:.1},{b:.4},{o:.4},{f:.4}");
+        }
+        return;
+    }
+
     println!("OneBarrier — RQ2 + tail latency at the RDMA operating point (SIMULATED)");
     println!("  latency model from the 1Pipe paper: RDMA RTT {} µs, reliable barrier {} µs,", base.rtt_us, base.barrier_us);
     println!("  apply {} µs; single executor, Poisson arrivals. Absolute µs are SIMULATED,", base.apply_us);

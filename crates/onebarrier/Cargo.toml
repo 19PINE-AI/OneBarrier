@@ -23,6 +23,10 @@ name = "ob-bench"
 path = "src/bin/ob_bench.rs"
 
 [[bin]]
+name = "ob-calibrate"
+path = "src/bin/ob_calibrate.rs"
+
+[[bin]]
 name = "ob-kv"
 path = "src/bin/ob_kv.rs"
 

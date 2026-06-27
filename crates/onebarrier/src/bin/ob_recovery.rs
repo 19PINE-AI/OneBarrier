@@ -1,9 +1,25 @@
 //! `ob-recovery` — recovery time vs load, the livelock regime, and the barrier-hold
 //! backpressure fix (docs/PAPER-PLAN.md exp #6). SIMULATED via the recovery model;
 //! 1Pipe detection + the catch-up dynamics.
-use onebarrier::recovery::{sweep, RecoveryParams};
+use onebarrier::recovery::{recovery_time_us, sweep, RecoveryParams};
 fn main() {
     let p = RecoveryParams::default();
+
+    // `ob-recovery csv` emits the fine sweep used by fig_recovery_load: recovery
+    // time vs live load, plain vs barrier-hold backpressure, with the livelock
+    // wall at live_rate >= replay capacity. Livelock is emitted as an empty field.
+    if std::env::args().any(|a| a == "csv") {
+        println!("live_rate_ops_us,plain_us,backpressure_us,replay_rate");
+        let n = 60;
+        for i in 0..n {
+            let lr = 0.2 + (i as f64 / (n - 1) as f64) * (8.0 - 0.2);
+            let plain = recovery_time_us(&p, lr, false).map(|v| format!("{v:.1}")).unwrap_or_default();
+            let bp = recovery_time_us(&p, lr, true).map(|v| format!("{v:.1}")).unwrap_or_default();
+            println!("{lr:.3},{plain},{bp},{}", p.replay_rate);
+        }
+        return;
+    }
+
     println!("OneBarrier — recovery time vs live load (SIMULATED; replay capacity {} ops/µs)", p.replay_rate);
     println!("  detect {}µs, fetch+restore {}µs, snapshot staleness ~{}µs\n", p.detect_us, p.fetch_restore_us, p.snap_interval_us/2.0);
     println!("{:>14} {:>20} {:>22}", "live ops/µs", "recovery (plain)", "recovery (+backpressure)");
