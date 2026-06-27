@@ -239,8 +239,9 @@ position. \emph{Timer-driven} reads (a background timer firing on wall-clock, e.
 Redis's \texttt{serverCron}, Nginx's cached-time update, Memcached's LRU
 maintainer) fire a \emph{different number of times} between record and replay,
 desynchronizing any position-indexed scheme. The virtual clock closes this boundary
-by making time a function of input events rather than of wall-clock or read count
-(Figure~\ref{fig:boundary}, Appendix~\ref{app:eval}). One time path stays outside the boundary: a binary reading
+by making time a function of the input prefix rather than of read count or timer
+firings---tracking wall-clock time through the inputs, not through how often it is
+sampled (Figure~\ref{fig:boundary}, Appendix~\ref{app:eval}). One time path stays outside the boundary: a binary reading
 the timestamp counter directly via \texttt{RDTSC} takes no syscall and exports no symbol,
 so neither \texttt{LD\_PRELOAD} nor the syscall trap catches it---the time analog of the
 \texttt{RDRAND} hole (\S\ref{sec:rng}). None of our five servers do so; a general
@@ -249,21 +250,40 @@ guarantee would pin it with \texttt{prctl(PR\_SET\_TSC)} (\S\ref{sec:limits}).
 \subsection{Virtual clock: time virtualization}
 The libOS intercepts the libc time surface (\texttt{gettimeofday},
 \texttt{clock\_gettime}, \texttt{time}) and returns \emph{virtual} time
-$t = \mathrm{base} + \mathrm{ticks}$, where \texttt{ticks} advances a fixed delta per
-socket read (a deterministic input event). The unit is one \emph{delivered message},
-not one TCP segment: the fabric hands the server one message per \texttt{recv}, so a tick
-corresponds to a logical input, and record and replay consume the identical sequence of
-reads because both draw from the same fabric-ordered message stream. (A raw byte-stream
-source whose segment boundaries differ across runs would need explicit framing to
-preserve this; the fabric supplies it.) Every time read is then
-\emph{count-independent}: only how many inputs were processed matters, not how many times
-or from which timer the value is read. \texttt{base} is captured live and persisted, so
-the recovered run reconstructs identical virtual time for the identical input sequence
-(Listing~\ref{lst:vclock}, Appendix~\ref{app:eval}). The mechanism is app-agnostic, and the vDSO is no escape
-hatch because \texttt{LD\_PRELOAD} overrides the exported symbols. The sharpest
-demonstration is Nginx: the HTTP \texttt{Date} header, formatted deep inside Nginx from
-its cached time, is byte-identical on live and recovered instances across a multi-second
-gap.
+$t = \mathrm{base} + \mathrm{ticks}$, where \texttt{ticks} advances only at a socket read
+(a deterministic input event), so the value is a function of the input prefix and is
+\emph{count-independent}: how many times, or from which timer, the value is read does not
+matter, only which inputs preceded the read---which is what stops a timer-driven read
+from desyncing replay. The unit is one \emph{delivered message}, not one TCP segment: the
+fabric hands the server one message per \texttt{recv}, so a tick corresponds to a logical
+input, and record and replay consume the identical sequence of reads because both draw
+from the same fabric-ordered message stream. (A raw byte-stream source whose segment
+boundaries differ across runs would need explicit framing to preserve this; the fabric
+supplies it.)
+
+The increment per input is the design's one real choice. A \emph{fixed} delta is
+deterministic but decouples virtual time from the wall clock: TTLs, timeouts, and
+rate windows then expire on an input-count schedule, not a real-time one, so the
+\emph{un}modified server behaves differently under the libOS even with no fault---a
+transparency cost, not just a recovery one. We instead advance by the \emph{real
+inter-arrival delta}, measured live and \emph{logged per input event}: virtual time
+tracks the wall clock at record, and the recovered run replays the \emph{same} logged
+deltas rather than reading the clock, so it is wall-clock-faithful \emph{and}
+byte-identical. The delta is one more field of the durable, replicated input record, so
+it costs nothing beyond what the recovery log already pays; over the real fabric it is
+not even a separate field, because the message's own total-order timestamp \emph{is} the
+logged, replicated, clock-correlated source---virtual time is just
+$\mathrm{base} + (\texttt{msg\_ts} - \texttt{msg\_ts}_0)$, time falling out of the same
+order the fabric already establishes. \texttt{base} (and the first timestamp) is captured
+live and persisted, so the recovered run reconstructs identical virtual time for the
+identical input sequence (Listing~\ref{lst:vclock}, Appendix~\ref{app:eval}). The one
+residual is that time advances only at input events: a fully idle server's clock is
+frozen between requests, so a TTL due to expire in an idle gap is observed lazily, at the
+next input---correct in value, deferred in moment, and immaterial to a server observed
+through its requests. The mechanism is app-agnostic, and the vDSO is no escape hatch
+because \texttt{LD\_PRELOAD} overrides the exported symbols. The sharpest demonstration is
+Nginx: the HTTP \texttt{Date} header, formatted deep inside Nginx from its cached time, is
+byte-identical on live and recovered instances across a multi-second gap.
 
 \subsection{Randomness virtualization}
 \label{sec:rng}
@@ -275,14 +295,26 @@ seeds its dictionary hash (SipHash) by reading \texttt{/dev/urandom} through
 symbols. The libOS therefore intercepts at the syscall level: a seccomp-BPF
 user-notification filter traps \texttt{getrandom} and fills the caller's buffer from
 a deterministic stream seeded from a persisted seed; \texttt{/dev/urandom} is
-redirected, via a private mount namespace, to a deterministic file. Two further
-entropy sources must be pinned for V8's \texttt{Math.random}: address-space layout
-(disabled with \texttt{setarch -R}) and the \texttt{RDRAND} CPU instruction, which
-no syscall trap can catch (disabled for OpenSSL via \texttt{OPENSSL\_ia32cap}). With
-the full stack, Node's \texttt{Date.now()} \emph{and} \texttt{Math.random()} are
-byte-identical across recovery, and Redis's \texttt{SPOP}/\texttt{SRANDMEMBER}
-outputs---which depend on the SipHash-seeded dictionary layout---recover identically
-where a control with the real device differs entirely.
+redirected, via a private mount namespace, to a deterministic file. This pins every
+consumer that \emph{routes through} those interfaces---OpenSSL's DRBG, and Redis's
+SipHash dictionary seed, whose \texttt{SPOP}/\texttt{SRANDMEMBER} order recovers
+identically where a real-device control differs entirely.
+
+One consumer does not route through them, and it is instructive: V8's
+\texttt{Math.random} is seeded once at engine start from V8's \emph{own} entropy source,
+which on x86 takes the \texttt{RDRAND}/system path---an untrappable CPU instruction that
+bypasses both the \texttt{getrandom} trap and the \texttt{/dev/urandom} redirect (the
+\texttt{RDRAND} hole of \S\ref{sec:limits}; \texttt{OPENSSL\_ia32cap} masks it only for
+OpenSSL, not for V8). The right fix is to pin the seed at the layer that owns it: V8
+exposes a \texttt{--random-seed} launch flag, so we record one seed and supply it to both
+the live and the recovered engine---a launch-time flag, no application or binary change,
+in the same class as \texttt{setarch -R} for address-space layout. With the seed pinned
+and the clock virtualized, Node's \texttt{Date.now()} \emph{and} \texttt{Math.random()}
+are byte-identical across recovery while a control diverges in both. The general lesson is
+that the determinism boundary is per-\emph{consumer}, not per-interface: a syscall trap
+suffices where the entropy crosses the kernel, but an in-process instruction source must
+be pinned at its own layer (or trapped via \texttt{prctl}/\texttt{ptrace},
+\S\ref{sec:limits}).
 
 \subsection{Threads: deterministic scheduling vs.\ share-nothing sharding}
 \label{sec:threads}
@@ -656,12 +688,16 @@ which provides FT without order-log-free replay.
 
 \textbf{Residual non-determinism.} Time and randomness are virtualized through the
 libc, syscall, and device-file surfaces, but two userspace instructions take no syscall
-and export no symbol: \texttt{RDRAND} (closed for OpenSSL via \texttt{OPENSSL\_ia32cap})
-and \texttt{RDTSC} (the timestamp counter, used by none of our five servers for
-externally-visible time but not yet generally pinned). A fully general guarantee would
-trap both---\texttt{RDTSC} via \texttt{prctl(PR\_SET\_TSC)}---and emulate them from the
-virtual clock/seed; we leave this hardening as engineering, having shown it is
-unnecessary for the five servers measured.
+and export no symbol: \texttt{RDRAND} and \texttt{RDTSC}. \texttt{RDRAND} feeds OpenSSL
+(masked via \texttt{OPENSSL\_ia32cap}) and, as \S\ref{sec:rng} found, V8's
+\texttt{Math.random} seed---which the \texttt{getrandom} trap never sees and which we
+instead pin at the V8 layer with a recorded \texttt{--random-seed}; the general,
+consumer-agnostic fix is to trap the instruction itself. \texttt{RDTSC} (the timestamp
+counter) is used by none of our five servers for externally-visible time but is not yet
+generally pinned. A fully general guarantee would trap both---\texttt{RDTSC} via
+\texttt{prctl(PR\_SET\_TSC)}, \texttt{RDRAND} via the same instruction-trap path---and
+emulate them from the virtual clock/seed; we leave this hardening as engineering, having
+closed it per-consumer for the servers measured.
 
 \textbf{Checkpoint pause and external effects.} The timestamp-$T$ snapshot is
 stop-the-world: its pause is bounded by the in-flight drain plus the image write, which
@@ -854,19 +890,25 @@ non-determinism.}
 \label{fig:threecosts}
 \end{figure}
 
-\begin{lstlisting}[style=cstyle,caption={The virtual clock: time advances one tick
-per input event, so every time read is a deterministic function of the input
-prefix.},label={lst:vclock},float=h]
+\begin{lstlisting}[style=cstyle,caption={The virtual clock: at each input event time
+advances by the \emph{real} inter-arrival delta, logged live and replayed on recovery,
+so every time read is wall-clock-faithful \emph{and} a deterministic function of the
+input prefix. (Over the fabric, \texttt{delta} is read from the message's total-order
+timestamp rather than measured.)},label={lst:vclock},float=h]
 ssize_t recv(int fd, void *b, size_t n, int fl) {
   ssize_t r = real_recv(fd, b, n, fl);
-  if (r > 0 && is_conn(fd))            // a deterministic input event:
-    atomic_fetch_add(&ticks, TICK_NS); //   advance virtual time one tick
+  if (r > 0 && is_conn(fd)) {           // a deterministic input event:
+    long long delta = recording        //   wall-clock delta since last input,
+        ? log_delta(now() - last)       //   measured + logged live, or
+        : replay_delta();               //   replayed from the log on recovery
+    atomic_fetch_add(&ticks, delta);    //   advance virtual time by it
+  }
   return r;
 }
 int clock_gettime(clockid_t c, struct timespec *t) {
   long long v = base_ns + atomic_load(&ticks);  // base persisted at record
   t->tv_sec = v / 1000000000; t->tv_nsec = v % 1000000000;
-  return 0;                            // count-independent: same inputs -> same time
+  return 0;                            // same inputs+deltas -> same wall-clock time
 }
 \end{lstlisting}
 

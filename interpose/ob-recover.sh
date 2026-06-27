@@ -25,14 +25,17 @@ if [ "$APP" = all ]; then
   done
   exit $rc
 fi
-VB="/tmp/ob-vbase-$APP"; VR="/tmp/ob-vrand-$APP"
+VB="/tmp/ob-vbase-$APP"; VR="/tmp/ob-vrand-$APP"; VD="/tmp/ob-vdelta-$APP"
 L="/tmp/ob-$APP-live.txt"; R="/tmp/ob-$APP-replay.txt"; C="/tmp/ob-$APP-control.txt"
 RNG="$HERE/librngdet.so"
 IA='~0x4000000000000000:~0x0'         # disable RDRAND/RDSEED for OpenSSL (CPU instr, untrappable)
 # Full determinism stack: virtual clock (time) + seccomp getrandom trap (raw RNG)
 # + ASLR-off (setarch -R) + no-RDRAND. The recovered process re-derives identical
 # time- AND randomness-dependent output.
-PRE="OPENSSL_ia32cap='$IA' OB_VCLOCK='$VB' OB_VRAND='$VR' LD_PRELOAD='$RNG $SO' setarch -R"
+# OB_VCLOCK_DELTAS makes virtual time track the REAL wall clock: the live run records
+# per-input inter-arrival deltas to $VD; the replay run advances by those logged
+# deltas (not a fixed tick), so recovery is byte-identical AND wall-clock-faithful.
+PRE="OPENSSL_ia32cap='$IA' OB_VCLOCK='$VB' OB_VCLOCK_DELTAS='$VD' OB_VRAND='$VR' LD_PRELOAD='$RNG $SO' setarch -R"
 CTL="LD_PRELOAD='$SO'"                 # control: real time + real randomness
 
 case "$APP" in
@@ -74,17 +77,30 @@ NG
 const http=require('http');const p=+process.argv[2];
 http.createServer((q,s)=>s.end(JSON.stringify({now:Date.now(),rnd:Math.random()})+'\n')).listen(p,'127.0.0.1');
 JS
-    bcmd(){ echo "'$NODE' /tmp/ob-node-srv.js $1"; }
+    # V8 seeds Math.random from its OWN entropy source (--random-seed=0 default = "system
+    # random"), which on x86 is the RDRAND/system path — NOT getrandom(2). So the seccomp
+    # getrandom trap (which pins OpenSSL/SipHash) does not reach it, and live/replay get
+    # different Math.random *streams*. V8's untrappable RDRAND seed is exactly the hole the
+    # paper flags; we pin it at the documented V8 layer with a fixed --random-seed (a launch
+    # flag, not an app change — same spirit as setarch -R / OPENSSL_ia32cap). The recorded
+    # seed travels with the recovery state, so live and replay reconstruct one stream.
+    V8SEED=2463534242
+    bcmd(){ echo "'$NODE' --random-seed=$V8SEED /tmp/ob-node-srv.js $1"; }
     lcmd(){ echo "$PRE $(bcmd "$1")"; }
-    up(){ for i in $(seq 50); do curl -s --max-time 1 "localhost:$1/" >/dev/null 2>&1 && return 0; sleep 0.2; done; return 1; }
-    drive(){ for i in $(seq 6); do curl -s --max-time 2 "localhost:$1/" 2>/dev/null; done; }
+    # Readiness is a bare TCP connect, not an HTTP request: node's handler draws a
+    # Math.random() per request, so an HTTP probe (esp. a racy curl --max-time that times
+    # out after the cold handler already drew) would add a *variable* warmup draw, offsetting
+    # the stream. Connect-only adds no draw; the generous drive timeout keeps the cold first
+    # request from timing out after drawing, so the draw count is exactly 6 in both runs.
+    up(){ for i in $(seq 50); do (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null && { exec 3>&- 3<&-; return 0; }; sleep 0.2; done; return 1; }
+    drive(){ for i in $(seq 6); do curl -s --max-time 10 "localhost:$1/" 2>/dev/null; done; }
     ;;
   *) echo "unknown app: $APP"; exit 2;;
 esac
 
 kill_port(){ for pid in $(ss -tlnp 2>/dev/null | grep ":$1 " | grep -oP 'pid=\K[0-9]+'); do kill -9 "$pid" 2>/dev/null; done; }
 [ -f "$RNG" ] || gcc -shared -fPIC -O2 -o "$RNG" "$HERE/rngdet.c" -lpthread 2>/dev/null
-kill_port "$P1"; kill_port "$P2"; kill_port "$P3"; sleep 1; rm -f "$VB" "$VR" "$L" "$R" "$C"
+kill_port "$P1"; kill_port "$P2"; kill_port "$P3"; sleep 1; rm -f "$VB" "$VR" "$VD" "$L" "$R" "$C"
 
 # 1) LIVE — record under the virtual clock
 eval "$(lcmd "$P1") >/dev/null 2>&1 &"

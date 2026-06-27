@@ -498,10 +498,16 @@ deferral) — both RDMA-independent.
 *raw* `getrandom(2)` syscall, invisible to symbol interposition. A **seccomp-BPF
 user-notification** filter traps `getrandom`; a supervisor thread fills the buffer
 from a persisted-seed splitmix64 stream. Verified: a raw-`getrandom` C program
-returns identical bytes across runs (`520956f1…`) vs differing real entropy. For
-V8's `Math.random`, two more sources are pinned — **ASLR** (`setarch -R`) and the
-**RDRAND** CPU instruction (`OPENSSL_ia32cap=~0x40…`). With the full stack, Node's
-`Date.now()` **and** `Math.random()` are byte-identical across a 4 s crash gap:
+returns identical bytes across runs (`520956f1…`) vs differing real entropy. This
+pins consumers that route through `getrandom`/`/dev/urandom` (OpenSSL DRBG, Redis
+SipHash). V8's `Math.random`, however, seeds from V8's **own** entropy
+(`--random-seed=0` = system random → the `RDRAND`/system path), which bypasses the
+`getrandom` trap entirely — so it is pinned at the V8 layer with a recorded
+**`--random-seed`** launch flag (plus **ASLR** off via `setarch -R`);
+`OPENSSL_ia32cap` masks `RDRAND` only for OpenSSL, not V8. Root-caused 2026-06-27:
+node had been flaky because of this (the getrandom trap never reached the seed); the
+`--random-seed` pin makes it deterministic (10/10). With the full stack, Node's
+`Date.now()` **and** `Math.random()` are byte-identical across a crash gap:
 
 ```
 live   {"now":1782055180436,"rnd":0.27798545181677814}

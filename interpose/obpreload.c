@@ -64,15 +64,30 @@ static size_t rep_len = 0, rep_cursor = 0;
 static long rep_diverged = 0;
 static int ob_mode = 0; /* 0 none, 1 record, 2 replay */
 
-/* Virtual clock (OB_VCLOCK): deterministic time = base + ticks; ticks advance by
- * a fixed delta on each socket read (a deterministic input event), so time reads
- * are count-independent and timer-driven reads no longer desync replay. base is
- * captured at the live run start and persisted; the replay run reconstructs the
- * same virtual time for the same inputs -> byte-identical time-dependent output. */
+/* Virtual clock (OB_VCLOCK): deterministic time = base + ticks; ticks advance on
+ * each socket read (a deterministic input event), so time reads are a function of
+ * the input prefix and timer-driven reads no longer desync replay. base is captured
+ * at the live run start and persisted; the replay run reconstructs the same virtual
+ * time for the same inputs -> byte-identical time-dependent output.
+ *
+ * The advance per input event has two modes. By default (OB_VCLOCK_DELTAS unset) it
+ * is a fixed VCLOCK_TICK_NS, which is deterministic but decouples virtual time from
+ * the wall clock: TTLs/timeouts then expire on an input-count schedule, not a
+ * real-time one. The faithful mode (OB_VCLOCK_DELTAS=<file>) instead advances by the
+ * REAL inter-arrival delta measured live and LOGGED per input event, so virtual time
+ * tracks the wall clock at record AND replays byte-identically from the logged deltas
+ * -- determinism without distorting wall-clock semantics. */
 #define VCLOCK_TICK_NS 1000000LL
 static long long vclock_base_ns = 0;
 static long vclock_ticks = 0;
 static int vclock_on = 0;
+/* real inter-arrival delta mode: 0 = fixed tick, 1 = record, 2 = replay */
+static int vclock_delta_mode = 0;
+static int vclock_delta_fd = -1;             /* record: append 8-byte deltas (ns)   */
+static long long *vclock_delta_buf = NULL;   /* replay: deltas loaded from the log   */
+static size_t vclock_delta_n = 0, vclock_delta_i = 0;
+static long long vclock_last_mono_ns = 0;    /* record: previous input's mono time   */
+static long long mono_ns(void);              /* defined below, used in capture()     */
 /* OB_VCLOCK_TICKS=<file>: checkpoint/resume the tick count, enabling tail-replay
  * recovery from an app-native snapshot (e.g. redis RDB) instead of from process
  * start. On init the shim loads the starting tick offset from the file; on each
@@ -190,7 +205,19 @@ static void capture(int fd, const void *buf, ssize_t n) {
     pthread_mutex_lock(&lock);
     nd_requests++;
     if (vclock_on) {
-        long t = __atomic_add_fetch(&vclock_ticks, VCLOCK_TICK_NS, __ATOMIC_RELAXED);
+        long long delta;
+        if (vclock_delta_mode == 2) {            /* replay the logged real delta */
+            delta = (vclock_delta_i < vclock_delta_n) ? vclock_delta_buf[vclock_delta_i++] : 0;
+        } else if (vclock_delta_mode == 1) {     /* record the real inter-arrival delta */
+            long long now = mono_ns();
+            delta = now - vclock_last_mono_ns;
+            if (delta < 0) delta = 0;
+            vclock_last_mono_ns = now;
+            if (vclock_delta_fd >= 0) { if (write(vclock_delta_fd, &delta, 8) < 0) {} }
+        } else {                                  /* legacy fixed tick (count-indexed) */
+            delta = VCLOCK_TICK_NS;
+        }
+        long t = __atomic_add_fetch(&vclock_ticks, (long)delta, __ATOMIC_RELAXED);
         if (vclock_tick_fd >= 0) { long long v = t; if (pwrite(vclock_tick_fd, &v, 8, 0) < 0) {} }
     }
     if (cap) {
@@ -209,6 +236,15 @@ static void capture(int fd, const void *buf, ssize_t n) {
  * init trap: the interceptors below NEVER call dlsym themselves — if the real
  * symbol isn't resolved yet (a call during ld.so init, before this constructor
  * runs) they fall back to the raw syscall.  No recursion, no TLS. */
+/* Monotonic nanoseconds via the resolved real symbol (never our interceptor, so no
+ * recursion) -- used only to measure real inter-arrival deltas at record time. */
+static long long mono_ns(void) {
+    struct timespec ts = {0, 0};
+    if (real_clock_gettime) real_clock_gettime(CLOCK_MONOTONIC, &ts);
+    else syscall(SYS_clock_gettime, CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+
 static void vclock_init(void) {
     const char *p = getenv("OB_VCLOCK");
     if (!p) return;
@@ -229,6 +265,26 @@ static void vclock_init(void) {
         FILE *tf = fopen(tp, "rb");
         if (tf) { long long v = 0; if (fread(&v, 8, 1, tf) == 1) vclock_ticks = (long)v; fclose(tf); }
         vclock_tick_fd = open(tp, O_WRONLY | O_CREAT, 0644);
+    }
+    /* real inter-arrival deltas: a non-empty file is the live recording -> replay it;
+     * otherwise this is the live run -> record deltas as inputs arrive. */
+    const char *dp = getenv("OB_VCLOCK_DELTAS");
+    if (dp && *dp) {
+        FILE *df = fopen(dp, "rb");
+        long dn = 0;
+        if (df) { fseek(df, 0, SEEK_END); dn = ftell(df); fseek(df, 0, SEEK_SET); }
+        if (df && dn >= 8) {                         /* replay: deltas already recorded */
+            vclock_delta_buf = malloc((size_t)dn);
+            if (vclock_delta_buf && fread(vclock_delta_buf, 1, (size_t)dn, df) == (size_t)dn)
+                vclock_delta_n = (size_t)dn / 8;
+            vclock_delta_mode = 2;
+            fclose(df);
+        } else {                                     /* record: capture real deltas live */
+            if (df) fclose(df);
+            vclock_delta_fd = open(dp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            vclock_last_mono_ns = mono_ns();
+            vclock_delta_mode = 1;
+        }
     }
     vclock_on = 1;
 }
