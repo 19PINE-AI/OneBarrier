@@ -6,8 +6,8 @@
 
 Making a server fault-tolerant without rewriting it is \emph{transparent} fault
 tolerance. It has been a goal of systems research for four decades, and has repeatedly
-failed to reach production. The reason was never the snapshot. Checkpointing a process
-is well understood. The reason was three \emph{coupled} costs a transparent system pays
+failed to reach production. The reason was never the snapshot, since checkpointing a
+process is well understood. It was three \emph{coupled} costs a transparent system pays
 on the critical path, each a large fraction of latency at the operating point every prior
 system lived at:
 \begin{enumerate}[leftmargin=1.4em,itemsep=1pt,topsep=2pt]
@@ -55,11 +55,11 @@ which establishes total order in a programmable switch and delivers reliably via
 two-phase commit barrier, over an RDMA fabric whose round-trip is $1$--$2\,\mu s$. The
 three costs change as follows:
 \begin{itemize}[leftmargin=1.4em,itemsep=1pt,topsep=2pt]
-\item the fabric \emph{is} the order, so the replay order-log vanishes.
-\item a timestamp-$T$ snapshot replaces the Chandy--Lamport cut, and is in fact
+\item The fabric \emph{is} the order, so the replay order-log vanishes.
+\item A timestamp-$T$ snapshot replaces the Chandy--Lamport cut, and is in fact
   stronger, because an order-preserving fabric has no in-flight channel state to
   capture.
-\item the output-commit barrier \emph{is} the fabric's reliable-delivery commit
+\item The output-commit barrier \emph{is} the fabric's reliable-delivery commit
   barrier, so the durable-replica write completes under a barrier the system already
   pays for, and fault tolerance adds no round trip over the reliable-fabric baseline.
 \end{itemize}
@@ -1127,9 +1127,15 @@ the UDP-server extension. The five servers of \S\ref{sec:eval-recovery} are all
 narrow, we apply it to ten more applications spanning five classes, chosen by the
 design's own preconditions: an application extends transparently if it is (i)
 \emph{deterministic given input order}, (ii) \emph{share-nothing or cleanly shardable},
-(iii) \emph{socket-based}, and (iv) bounded in \emph{output}. The test routes each app to
-a recovery path (Figure~\ref{fig:taxonomy}). Every app that passes recovers
-(Figure~\ref{fig:extresults}), and each is one command in the artifact.
+(iii) \emph{socket-based}, and (iv) bounded in \emph{output}. The first three are the
+determinism and interception requirements the libOS works against. The fourth is an
+output-commit requirement: suppression keys each externalized effect by a per-client
+\texttt{(client, seq)} high-water-mark (\S\ref{sec:libos}), so an application whose
+response to one request is an unbounded or open-ended stream has no natural sequence
+point at which the effect is acknowledged and replay-suppressible. Request/response and
+discrete-message workloads satisfy it, while an infinite server-push stream does not. The test
+routes each app to a recovery path (Figure~\ref{fig:taxonomy}). Every app that passes
+recovers (Figure~\ref{fig:extresults}), and each is one command in the artifact.
 
 \begin{figure}[h]
 \centering
