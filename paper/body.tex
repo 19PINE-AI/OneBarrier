@@ -110,7 +110,8 @@ correlated power loss---the FaRM/RAMCloud tradeoff~\cite{dragojevic2014farm}.
 
 \paragraph{The three coupled costs.} A transparent FT system must, on every
 externalizing message, guarantee that the producing state is recoverable. Three
-mechanisms make that guarantee, and historically each was expensive.
+mechanisms make that guarantee---the classical rollback-recovery
+toolkit~\cite{elnozahy2002survey}---and historically each was expensive.
 \emph{Deterministic replay} reconstructs a failed replica's state by re-executing
 its inputs in the same order; the order itself is non-deterministic and must be
 logged, and message-order logging dominates replay overhead~\cite{mashtizadeh2017castor}. A
@@ -301,11 +302,11 @@ SipHash dictionary seed, whose \texttt{SPOP}/\texttt{SRANDMEMBER} order recovers
 identically where a real-device control differs entirely.
 
 One consumer does not route through them, and it is instructive: V8's
-\texttt{Math.random} is seeded once at engine start from V8's \emph{own} entropy source,
-which on x86 takes the \texttt{RDRAND}/system path---an untrappable CPU instruction that
-bypasses both the \texttt{getrandom} trap and the \texttt{/dev/urandom} redirect (the
-\texttt{RDRAND} hole of \S\ref{sec:limits}; \texttt{OPENSSL\_ia32cap} masks it only for
-OpenSSL, not for V8). The right fix is to pin the seed at the layer that owns it: V8
+\texttt{Math.random} is seeded once at engine start from V8's \emph{own} entropy source.
+On x86 that source is the \texttt{RDRAND} instruction, which takes no syscall and so
+bypasses both the \texttt{getrandom} trap and the \texttt{/dev/urandom} redirect---the
+\texttt{RDRAND} hole of \S\ref{sec:limits} (\texttt{OPENSSL\_ia32cap} masks it only for
+OpenSSL, not V8). The right fix is to pin the seed at the layer that owns it: V8
 exposes a \texttt{--random-seed} launch flag, so we record one seed and supply it to both
 the live and the recovered engine---a launch-time flag, no application or binary change,
 in the same class as \texttt{setarch -R} for address-space layout. With the seed pinned
@@ -342,8 +343,9 @@ Replay from process start costs time linear in the log length; a checkpoint boun
 post-checkpoint tail. Two mechanisms provide checkpoints. An application-native
 snapshot (a Redis RDB) plus tail-replay works for a single process; combined with a
 virtual-clock tick checkpoint, the recovered instance resumes time exactly where the
-snapshot was taken. The general, any-binary mechanism is CRIU~\cite{criu}: it checkpoints the
-whole process---memory, file descriptors, threads, \emph{and} the in-memory virtual
+snapshot was taken. The general, any-binary mechanism is CRIU~\cite{criu} (in the
+userspace-checkpoint lineage of DMTCP~\cite{ansel2009dmtcp} and
+BLCR~\cite{hargrove2006blcr}): it checkpoints the whole process---memory, file descriptors, threads, \emph{and} the in-memory virtual
 clock---so a restore needs no replay of the pre-checkpoint history. We verify CRIU
 checkpoint/restore of the hardest app class, a multi-process PostgreSQL (postmaster
 plus background workers, SysV and POSIX shared memory, WAL): data is byte-identical
@@ -375,7 +377,14 @@ a crash that loses all volatile state. The exactly-once and no-lost-acknowledged
 invariants this yields are machine-checked in TLA+ (\S\ref{sec:impl},
 Appendix~\ref{app:tla}), whose \textsc{AckedDurable} invariant encodes the
 output-commit precondition: an output is released only after its producing input is in
-the snapshot or the durable log.
+the snapshot or the durable log. The guarantee this establishes is precisely that the
+recovered server re-emits no already-acknowledged output---server-side suppression. End-to-end
+exactly-once additionally requires the \emph{client} to carry a stable identity across the
+reconnect a primary failure forces and to re-issue with the same sequence---RIFL's
+cooperating-client assumption, which the closed fabric satisfies (a client is a fabric
+endpoint with a durable id) but a stock external TCP client, reconnecting on a fresh
+5-tuple, does not; for those the libOS suppresses duplicate emission but cannot recognize
+a client's own blind retry as a duplicate (\S\ref{sec:limits}).
 
 \paragraph{Engineering realities.} Making ``unmodified'' credible meant handling the
 awkward edges of interposition---the \texttt{LD\_PRELOAD} early-init trap, glibc symbol
@@ -674,9 +683,14 @@ target.
 \textbf{No automated failover layer.} We validate the recovery \emph{mechanism}
 (restore, order-log-free replay, and state-transfer to the live cut) and inherit
 membership from the fabric's failure detector, but we do not build the
-primary-promotion / view-change protocol that a production deployment needs to select
-and install a new live replica after a primary failure; that election layer is
-engine-level future work (\S\ref{sec:ft}).
+primary-promotion / view-change protocol (a standard ingredient, e.g.\ Viewstamped
+Replication~\cite{oki1988vr,liskov2012vrrevisited}) that a production deployment needs to
+select and install a new live replica after a primary failure; that election layer is
+engine-level future work (\S\ref{sec:ft}). Because the design is \emph{passive}---one
+live replica plus log-only backups---a primary failure incurs a recovery window
+(restore plus order-log-free replay, \S\ref{sec:eval-time}) during which the shard is
+unavailable, the deliberate price of holding execution CPU near a single replica's where
+active SMR pays $N\times$ to stay continuously available.
 
 \textbf{Shared-everything determinism.} The order-log-free deterministic-replay
 guarantee is for \emph{share-nothing} servers. Arbitrary shared-everything
@@ -699,14 +713,27 @@ generally pinned. A fully general guarantee would trap both---\texttt{RDTSC} via
 emulate them from the virtual clock/seed; we leave this hardening as engineering, having
 closed it per-consumer for the servers measured.
 
-\textbf{Checkpoint pause and external effects.} The timestamp-$T$ snapshot is
-stop-the-world: its pause is bounded by the in-flight drain plus the image write, which
-for CRIU scales with resident set size (Fig.~\ref{fig:recovery}b), traded against recovery
-time by the snapshot interval; we do not separately measure the intra-checkpoint tail
-latency, and an incremental application-native snapshot reduces the pause where
-available. Finally, transparent FT cannot recover external side effects already
-delivered to non-cooperating peers; output commit bounds, but does not eliminate, the
-externally-visible inconsistency window.
+\textbf{Checkpoint pause.} The timestamp-$T$ snapshot is stop-the-world: its pause is
+bounded by the in-flight drain plus the image write, which for CRIU scales with resident
+set size (Fig.~\ref{fig:recovery}b), traded against recovery time by the snapshot
+interval; we do not separately measure the intra-checkpoint tail latency, and an
+incremental application-native snapshot reduces the pause where available.
+
+\textbf{Cooperating peers and clients.} The deepest boundary is not a cost but an
+impossibility: transparent FT cannot un-send an external side effect already delivered to
+a peer that will not cooperate. Output commit \emph{bounds} the externally-visible
+inconsistency window---no effect is released before its producing state is durable---but
+does not eliminate it, and exactly-once across a failure is server-side unless the far end
+helps. This is one constraint with two faces. On the \emph{client} side, dropping a
+duplicate a recovered server would re-emit is free, but recognizing a client's own blind
+retry after a reconnect needs the client to carry a stable id and resequence
+(\S\ref{sec:libos}). On the \emph{downstream} side, a service that calls a third party
+cannot roll that call back. Both are paid the same way---by cooperation at the
+boundary---which is exactly why the clean wins are fabric-internal effects (peers cooperate
+through the fabric's dedup), idempotent effects, and self-contained leaf services; a naive
+non-cooperating peer can still be served correctly, but only by buffering output at the
+ingress until durable, re-importing the very latency the design removes
+(\S\ref{sec:ext}).
 
 \section{Related Work}
 \label{sec:related}
@@ -752,7 +779,9 @@ leave behind.
 
 \paragraph{Checkpoint, deterministic multithreading, and RDMA.} CRIU~\cite{criu}
 checkpoints unmodified processes---we use it for bounded recovery---as do fast microVM
-snapshot systems~\cite{agache2020firecracker,ustiugov2021reap}.
+snapshot systems~\cite{agache2020firecracker,ustiugov2021reap}; gVisor~\cite{gvisor}
+checkpoints a combined library-OS-plus-application sandbox, the closest prior point to our
+libOS+app snapshot.
 Kendo~\cite{olszewski2009kendo} and dThreads~\cite{liu2011dthreads} make multithreading
 deterministic at a throughput cost that motivates our sharding, and execute-then-verify
 replication~\cite{kapritsos2012eve,guo2014rex} reaches multicore replication only by
@@ -990,8 +1019,9 @@ bounded.}
 \paragraph{The barrier overlap.} Figure~\ref{fig:overlap} renders the ride-versus-stack
 structure of Table~\ref{tab:rq2}; Figure~\ref{fig:loadsweep} sweeps offered load at the
 RDMA operating point and shows the FT-overlap tail coincident with the reliable baseline
-across the whole range while the serial tier's throughput ceiling collapses
-$\sim$$6000\times$; and Figure~\ref{fig:softroce} gives the real-\texttt{ibverbs}
+across the whole range while the serial tier's throughput ceiling collapses by orders of
+magnitude (the modeled $1/\textrm{fsync}$-vs-$1/\textrm{apply}$ ratio, $\sim$$6000\times$
+at these parameters); and Figure~\ref{fig:softroce} gives the real-\texttt{ibverbs}
 per-operation latencies that anchor the RDMA projection.
 
 \begin{figure}[h]

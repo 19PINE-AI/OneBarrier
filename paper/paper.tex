@@ -76,10 +76,10 @@
 \begin{abstract}
 Transparent fault tolerance---making an \emph{unmodified} server crash-recoverable
 with no code changes---has repeatedly failed to reach production, not because
-snapshotting is hard but because of three coupled costs that were all large at the
-millisecond operating point every prior system lived at: logging non-determinism
-(above all message order), coordinating a distributed consistent cut, and holding
-externally-visible output until its producing state is durable. The industry instead
+snapshotting is hard but because of three coupled costs, all large at the millisecond
+operating point of every prior system: logging non-determinism (above all message
+order), coordinating a distributed consistent cut, and holding externally-visible
+output until its producing state is durable. The industry instead
 rewrote applications to externalize state---durable execution, exactly-once stream
 processing---winning mindshare but leaving the legacy fleet behind. We revisit the
 abandoned transparent path and show that the verdict is operating-point-dependent: it
