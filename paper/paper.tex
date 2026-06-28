@@ -74,40 +74,40 @@
 \maketitle
 
 \begin{abstract}
-Transparent fault tolerance---making an \emph{unmodified} server crash-recoverable
-with no code changes---has repeatedly failed to reach production, not because
+Transparent fault tolerance makes an \emph{unmodified} server crash-recoverable
+with no code changes. It has repeatedly failed to reach production, not because
 snapshotting is hard but because of three coupled costs, all large at the millisecond
 operating point of every prior system: logging non-determinism (above all message
 order), coordinating a distributed consistent cut, and holding externally-visible
-output until its producing state is durable. The industry instead
-rewrote applications to externalize state---durable execution, exactly-once stream
-processing---winning mindshare but leaving the legacy fleet behind. We revisit the
-abandoned transparent path and show that the verdict is operating-point-dependent: it
-becomes practical under two co-designed shifts, neither sufficient alone.
+output until its producing state is durable. The industry instead rewrote applications
+to externalize state, through durable execution and exactly-once stream processing.
+That path won mindshare but left the legacy fleet behind. We revisit the abandoned
+transparent path and show that the verdict is operating-point-dependent. It becomes
+practical under two co-designed shifts, neither sufficient alone.
 
 The first, and most-measured, shift is a user-space \emph{determinism libOS}
-(\texttt{LD\_PRELOAD}, no kernel or application changes) that makes unmodified servers
-deterministically recoverable by virtualizing their residual local
-non-determinism---time, randomness, and thread scheduling---at a few-percent
-steady-state overhead; we demonstrate \emph{byte-identical deterministic recovery} of
-stock Redis, Memcached, Nginx, and Node.js, and general CRIU checkpoint/restore of a
-multi-process PostgreSQL. The second shift is the operating point: routing those
-servers through a microsecond-scale in-network total-order reliable fabric (1Pipe)
-collapses all three coupled costs. The fabric \emph{is} the order, so the replay
-order-log vanishes, and a timestamp-$T$ snapshot replaces the Chandy--Lamport cut. The
-crux is the third cost: the output-commit barrier and the fabric's reliable-delivery
-commit barrier are the \emph{same} barrier. OneBarrier replicates its recovery log by
-scattering each input to the replicas in one RTT (1Pipe's native replication), so it is
-durable within a barrier the system already pays for---and fault tolerance adds no round
-trip over the reliable-fabric baseline, the regime where reliable delivery is already
-required for correctness. We quantify the overlap ($0.23\%$ marginal cost in the
-loopback reproduction, and a discrete-event model at the RDMA operating point;
-corroborated by real RDMA verbs at $\sim$1.5\,\textmu s over SoftRoCE), verify
-exactly-once and linearizability under injected crashes, machine-check the core
-protocols in TLA+, and position the result honestly against LLFT and HyCoR, which
-substantially anticipate the idea at the millisecond scale. The contribution is a
-realization-and-measurement: at the in-network-total-order, microsecond operating
-point, a long-dismissed technique becomes a byproduct of the communication fabric.
+(\texttt{LD\_PRELOAD}, no kernel or application changes). It makes unmodified servers
+deterministically recoverable by virtualizing their residual local non-determinism,
+namely time, randomness, and thread scheduling, at a few-percent steady-state overhead.
+We demonstrate \emph{byte-identical deterministic recovery} of stock Redis, Memcached,
+Nginx, and Node.js, and general CRIU checkpoint/restore of a multi-process PostgreSQL.
+The second shift is the operating point: routing those servers through a
+microsecond-scale in-network total-order reliable fabric (1Pipe) collapses all three
+coupled costs. The fabric \emph{is} the order, so the replay order-log vanishes, and a
+timestamp-$T$ snapshot replaces the Chandy--Lamport cut. The crux is the third cost: the
+output-commit barrier and the fabric's reliable-delivery commit barrier are the
+\emph{same} barrier. OneBarrier replicates its recovery log by scattering each input to
+the replicas in one RTT (1Pipe's native replication), so it is durable within a barrier
+the system already pays for. Fault tolerance therefore adds no round trip over the
+reliable-fabric baseline, the regime where reliable delivery is already required for
+correctness. We quantify the overlap ($0.23\%$ marginal cost in the loopback
+reproduction, plus a discrete-event model at the RDMA operating point corroborated by
+real RDMA verbs at $\sim$1.5\,\textmu s over SoftRoCE). We verify exactly-once and
+linearizability under injected crashes, machine-check the core protocols in TLA+, and
+position the result honestly against LLFT and HyCoR, which substantially anticipate the
+idea at the millisecond scale. The contribution is a realization-and-measurement: at the
+in-network-total-order, microsecond operating point, a long-dismissed technique becomes
+a byproduct of the communication fabric.
 \end{abstract}
 
 \begin{center}
