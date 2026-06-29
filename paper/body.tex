@@ -99,7 +99,7 @@ correlated power loss. This is the FaRM/RAMCloud tradeoff~\cite{dragojevic2014fa
   trip (\S\ref{sec:overview}, \S\ref{sec:eval-overlap}).
 \item An end-to-end evaluation on stock binaries: byte-identical recovery,
   linearizability and exactly-once under crashes, bounded recovery time and overhead, and
-  resource cost against HyCoR, LLFT, active SMR, and CRIU. The same study carries the
+  resource cost against HyCoR, LLFT, active state-machine replication (SMR), and CRIU. The same study carries the
   mechanism, via an explicit fit-test, to ten further applications across five classes
   (\S\ref{sec:eval}, \S\ref{sec:ext}).
 \item Machine-checked TLA+ specifications of 1Pipe total order and of OneBarrier's
@@ -299,7 +299,8 @@ symbols. The libOS therefore intercepts at the syscall level: a seccomp-BPF
 user-notification filter traps \texttt{getrandom} and fills the caller's buffer from
 a deterministic stream seeded from a persisted seed. Separately, \texttt{/dev/urandom} is
 redirected, via a private mount namespace, to a deterministic file. This pins every
-consumer that \emph{routes through} those interfaces: OpenSSL's DRBG, and Redis's
+consumer that \emph{routes through} those interfaces: OpenSSL's deterministic random bit
+generator (DRBG), and Redis's
 SipHash dictionary seed, whose \texttt{SPOP}/\texttt{SRANDMEMBER} order recovers
 identically where a real-device control differs entirely.
 
