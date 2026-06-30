@@ -20,6 +20,7 @@
 \usepackage{algorithm}
 \usepackage{algpseudocode}
 
+\usepackage{microtype}
 \usepackage{hyperref}
 \usepackage{url}
 \hypersetup{
@@ -60,7 +61,16 @@
 }
 \lstset{style=cstyle}
 
-\title{OneBarrier: Transparent Fault Tolerance for Unmodified\\ Servers as a Byproduct of Total-Order Communication}
+% --- float placement: let pages pack more floats and leave fewer gaps ---
+\renewcommand{\topfraction}{0.92}
+\renewcommand{\bottomfraction}{0.85}
+\renewcommand{\textfraction}{0.06}
+\renewcommand{\floatpagefraction}{0.72}
+\setcounter{topnumber}{3}
+\setcounter{bottomnumber}{2}
+\setcounter{totalnumber}{5}
+
+\title{OneBarrier: Transparent Fault Tolerance for Free}
 
 \author{
   Bojie Li \\
@@ -74,40 +84,32 @@
 \maketitle
 
 \begin{abstract}
-Transparent fault tolerance makes an \emph{unmodified} server crash-recoverable
-with no code changes. It has repeatedly failed to reach production, not because
-snapshotting is hard but because of three coupled costs, all large at the millisecond
-operating point of every prior system: logging non-determinism (above all message
-order), coordinating a distributed consistent cut, and holding externally-visible
-output until its producing state is durable. The industry instead rewrote applications
-to externalize state, through durable execution and exactly-once stream processing.
-That path won mindshare but left the legacy fleet behind. We revisit the abandoned
-transparent path and show that the verdict is operating-point-dependent. It becomes
-practical under two co-designed shifts, neither sufficient alone.
+Transparent fault tolerance makes an \emph{unmodified} server crash-recoverable with no code
+changes. It has never reached production, not because snapshots are hard but because of three
+coupled costs that are large at the millisecond operating point of every prior system: logging
+non-determinism (above all message order), coordinating a consistent distributed cut, and holding
+externally-visible output until its producing state is durable. Industry instead rewrote
+applications to externalize state, leaving the legacy fleet behind. We revisit the transparent path
+and show the verdict is operating-point-dependent: it becomes practical under two co-designed shifts.
 
-The first, and most-measured, shift is a user-space \emph{determinism libOS}
-(\texttt{LD\_PRELOAD}, no kernel or application changes). It makes unmodified servers
-deterministically recoverable by virtualizing their residual local non-determinism,
-namely time, randomness, and thread scheduling, at a few-percent steady-state overhead.
-We demonstrate \emph{byte-identical deterministic recovery} of stock Redis, Memcached,
-Nginx, and Node.js, and general CRIU checkpoint/restore of a multi-process PostgreSQL.
-The second shift is the operating point: routing those servers through a
-microsecond-scale in-network total-order reliable fabric (1Pipe) collapses all three
-coupled costs. The fabric \emph{is} the order, so the replay order-log vanishes, and a
-timestamp-$T$ snapshot replaces the Chandy--Lamport cut. The crux is the third cost: the
-output-commit barrier and the fabric's reliable-delivery commit barrier are the
-\emph{same} barrier. OneBarrier replicates its recovery log by scattering each input to
-the replicas in one RTT (1Pipe's native replication), so it is durable within a barrier
-the system already pays for. Fault tolerance therefore adds no round trip over the
-reliable-fabric baseline, the regime where reliable delivery is already required for
-correctness. We quantify the overlap ($0.23\%$ marginal cost in the loopback
-reproduction, plus a discrete-event model at the RDMA operating point corroborated by
-real RDMA verbs at $\sim$1.5\,\textmu s over SoftRoCE). We verify exactly-once and
-linearizability under injected crashes, machine-check the core protocols in TLA+, and
-position the result honestly against LLFT and HyCoR, which substantially anticipate the
-idea at the millisecond scale. The contribution is a realization-and-measurement: at the
-in-network-total-order, microsecond operating point, a long-dismissed technique becomes
-a byproduct of the communication fabric.
+The first is a user-space \emph{determinism libOS} (\texttt{LD\_PRELOAD}, no kernel or
+application changes) that makes unmodified servers deterministically recoverable by
+virtualizing their residual local non-determinism, namely time, randomness, and thread
+scheduling, at a few-percent overhead. We demonstrate \emph{byte-identical recovery} of
+stock Redis, Memcached, Nginx, and Node.js, and CRIU checkpoint/restore of a multi-process
+PostgreSQL.
+
+The second is the operating point: routing those servers through a microsecond in-network
+total-order reliable fabric (1Pipe) collapses all three costs. The fabric \emph{is} the
+order, so the replay order-log vanishes; a timestamp-$T$ snapshot replaces the
+Chandy--Lamport cut; and, the crux, the output-commit barrier and the fabric's
+reliable-delivery commit barrier are the \emph{same} barrier, so fault tolerance adds no
+round trip over the reliable-fabric baseline. We quantify the overlap ($0.23\%$ marginal
+cost), verify exactly-once and linearizability under injected crashes, and machine-check
+the protocols in TLA+. The contribution is a realization-and-measurement, positioned
+honestly against LLFT and HyCoR, which anticipate the idea at the millisecond scale: at
+the in-network-total-order, microsecond operating point, a long-dismissed technique
+becomes a byproduct of the communication fabric.
 \end{abstract}
 
 \begin{center}
