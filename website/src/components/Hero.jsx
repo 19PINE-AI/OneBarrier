@@ -1,109 +1,146 @@
 import { useRef } from "react";
 import { motion } from "motion/react";
-import { useLoop, eseg, lerp, pulse } from "../lib/anim";
+import { useLoop, eseg, pulse } from "../lib/anim";
 
-/* Six messages per loop. Left of the blue line: concurrent, arrival order.
-   Past barrier B: sorted into one timestamp order (best-effort delivery).
-   Past commit C: the whole ordered group crosses together — atomic, reliable. */
-const MSGS = [
-  { ts: 2, lane: -34, dep: 0.02 },
-  { ts: 5, lane: 22, dep: 0.05 },
-  { ts: 3, lane: 8, dep: 0.09 },
-  { ts: 9, lane: -18, dep: 0.13 },
-  { ts: 7, lane: 30, dep: 0.18 },
-  { ts: 11, lane: -8, dep: 0.24 },
-];
-const ORDER = [2, 3, 5, 7, 9, 11];
-const F1 = 0.22, F2 = 0.12;            // flight to B, then settle into sorted slot
-const G0 = 0.64, G1 = 0.80;            // the ordered group crosses C together
-const FADE = 0.94;
+/* Animated Figure 1 of the paper: the same request drawn twice.
+   Top: every prior transparent system stacks the durable write after the
+   delivery-confirmation wait, holding the reply (+2963 µs measured).
+   Bottom: OneBarrier lands the copy to backups inside the commit barrier
+   the network crosses anyway, so the reply leaves at the barrier
+   (+4.6 µs measured). One dashed line through both rows: one barrier. */
 
-function HeroPipe() {
+const X0 = 30, BAR0 = 120, BX = 560, WR1 = 852, XEND = 1008;
+const P_IN = [0.02, 0.1];      // input flies in
+const P_WAIT = [0.1, 0.42];    // both rows traverse the delivery wait
+const P_COPY = [0.12, 0.34];   // row 2: the copy lands inside the wait
+const P_RIDE = [0.44, 0.58];   // row 2: reply departs at the barrier
+const P_WRITE = [0.44, 0.76];  // row 1: the durable write grinds on
+const P_STACK = [0.78, 0.9];   // row 1: reply finally departs
+const FADE = [0.95, 0.995];
+
+function dotX(uIn, uWait, tail) {
+  return X0 + (BAR0 - X0) * uIn + (BX - BAR0) * uWait + tail;
+}
+
+function HeroRace() {
   const ref = useRef(null);
-  const { t } = useLoop(11000, ref);
-  const W = 1080, H = 150, mid = H / 2;
-  const bx = W * 0.40;                  // barrier timestamp B (ordering)
-  const cx = W * 0.72;                  // commit barrier C (reliable delivery)
-  const midSlot = (s) => bx + 44 + s * 50;
-  const endSlot = (s) => cx + 40 + s * 44;
+  const { t } = useLoop(9000, ref);
+  const W = 1080, H = 232;
+  const Y1 = 64, Y2 = 154;               // row centers (stack / ride)
+  const BH = 34;                          // bar height
+
+  const uIn = eseg(t, ...P_IN);
+  const uWait = eseg(t, ...P_WAIT);
+  const uCopy = eseg(t, ...P_COPY);
+  const uRide = eseg(t, ...P_RIDE);
+  const uWrite = eseg(t, ...P_WRITE);
+  const uStack = eseg(t, ...P_STACK);
+  const fade = 1 - eseg(t, ...FADE);
+  const bGlow = pulse(t, 0.38, 0.52);
+
+  const x1 = dotX(uIn, uWait, (WR1 - BX) * uWrite + (XEND - WR1) * uStack);
+  const x2 = dotX(uIn, uWait, (XEND - BX) * uRide);
+  const show = t >= P_IN[0] ? Math.min((t - P_IN[0]) * 24, 1) * fade : 0;
+
+  const barLabel = (x, y, text, color, size = 11.5) => (
+    <text x={x} y={y} fill={color} fontSize={size} fontFamily="var(--font-mono)" textAnchor="middle">
+      {text}
+    </text>
+  );
 
   return (
     <div ref={ref} aria-hidden="true">
       <svg viewBox={`0 0 ${W} ${H}`} className="svg-stage" style={{ opacity: 0.95 }}>
-        {/* the pipe */}
-        <line x1="0" y1={mid} x2={W} y2={mid} stroke="rgba(240,239,233,0.12)" strokeWidth="1" />
-        <text x="8" y={mid - 44} fill="var(--muted)" fontSize="11" fontFamily="var(--font-mono)">
-          concurrent messages, arrival order
+        {/* row labels */}
+        <text x={BAR0} y={Y1 - 32} fill="var(--red)" fontSize="11" fontFamily="var(--font-mono)">
+          prior transparent systems — the write stacks after the wait
         </text>
-        <text x={(bx + cx) / 2} y={H - 6} fill="var(--muted)" fontSize="10.5" fontFamily="var(--font-mono)" textAnchor="middle">
-          ordered ≤ B · held for commit
-        </text>
-        <text x={W - 8} y={H - 6} fill="var(--muted)" fontSize="10.5" fontFamily="var(--font-mono)" textAnchor="end">
-          delivered ≤ C · atomic
+        <text x={BAR0} y={Y2 - 32} fill="var(--green)" fontSize="11" fontFamily="var(--font-mono)">
+          OneBarrier — the write rides inside the same wait
         </text>
 
-        {/* barrier timestamp B — ordering */}
-        <line x1={bx} y1={16} x2={bx} y2={H - 16} stroke="var(--blue)" strokeWidth="1.5" />
-        <line x1={bx} y1={16} x2={bx} y2={H - 16} stroke="var(--blue)" strokeWidth="7"
-          opacity={0.18 + 0.14 * Math.sin(t * Math.PI * 6)} />
-        <text x={bx} y={12} fill="var(--blue)" fontSize="11" fontFamily="var(--font-mono)" textAnchor="middle">
-          barrier ts B · order
+        {/* row 1: wait, then the stacked durable write */}
+        <rect x={BAR0} y={Y1 - BH / 2} width={BX - BAR0} height={BH} rx="7"
+          fill="var(--blue-dim)" stroke="var(--blue)" strokeWidth="1.3" />
+        <rect x={BAR0} y={Y1 - BH / 2} width={(BX - BAR0) * uWait} height={BH} rx="7"
+          fill="rgba(57,135,229,0.22)" />
+        {barLabel((BAR0 + BX) / 2, Y1 + 4, "wait for delivery confirmation", "var(--blue)")}
+        <rect x={BX} y={Y1 - BH / 2} width={WR1 - BX} height={BH} rx="7"
+          fill="var(--red-dim)" stroke="var(--red)" strokeWidth="1.3" />
+        <rect x={BX} y={Y1 - BH / 2} width={(WR1 - BX) * uWrite} height={BH} rx="7"
+          fill="rgba(230,103,103,0.24)" />
+        {barLabel((BX + WR1) / 2, Y1 + 4, "durable write", "var(--red)")}
+        {uWrite > 0.02 && uStack < 0.02 && (
+          <text x={WR1 + 14} y={Y1 + 4} fill="var(--red)" fontSize="11" fontFamily="var(--font-mono)"
+            opacity={(0.55 + 0.45 * Math.sin(t * Math.PI * 10)) * fade}>
+            reply held…
+          </text>
+        )}
+        {uStack > 0.1 && (
+          <text x={XEND + 20} y={Y1 + 4} fill="var(--red)" fontSize="11" fontFamily="var(--font-mono)" opacity={fade}>
+            reply
+          </text>
+        )}
+        <text x={(BX + WR1) / 2} y={Y1 + BH / 2 + 22} fill="var(--red)" fontSize="11.5"
+          fontFamily="var(--font-mono)" textAnchor="middle" opacity={eseg(t, 0.8, 0.86) * fade}>
+          +2963 µs measured
         </text>
 
-        {/* commit barrier C — reliable delivery */}
-        <line x1={cx} y1={16} x2={cx} y2={H - 16} stroke="var(--amber)" strokeWidth="1.5" />
-        <line x1={cx} y1={16} x2={cx} y2={H - 16} stroke="var(--amber)" strokeWidth="7"
-          opacity={0.25 + 0.2 * Math.sin(t * Math.PI * 6)} />
-        <text x={cx} y={12} fill="var(--amber)" fontSize="11" fontFamily="var(--font-mono)" textAnchor="middle">
-          commit barrier C · deliver
+        {/* row 2: the same wait, the copy riding inside it */}
+        <rect x={BAR0} y={Y2 - BH / 2} width={BX - BAR0} height={BH} rx="7"
+          fill="var(--blue-dim)" stroke="var(--blue)" strokeWidth="1.3" />
+        <rect x={BAR0} y={Y2 - BH / 2} width={(BX - BAR0) * uWait} height={BH} rx="7"
+          fill="rgba(57,135,229,0.22)" />
+        {barLabel((BAR0 + BX) / 2, Y2 + 4, "the same wait (commit barrier)", "var(--blue)")}
+        <rect x={BAR0} y={Y2 + BH / 2 + 8} width={300} height={26} rx="6"
+          fill="var(--green-dim)" stroke="var(--green)" strokeWidth="1.2" />
+        <rect x={BAR0} y={Y2 + BH / 2 + 8} width={300 * uCopy} height={26} rx="6"
+          fill="rgba(25,158,112,0.26)" />
+        {barLabel(BAR0 + 150, Y2 + BH / 2 + 25, "copy to k−1 backups", "var(--green)", 10.5)}
+        {uCopy >= 1 && (
+          <text x={BAR0 + 312} y={Y2 + BH / 2 + 25} fill="var(--green)" fontSize="10.5"
+            fontFamily="var(--font-mono)" opacity={eseg(t, P_COPY[1], P_COPY[1] + 0.04) * fade}>
+            ✓ already durable
+          </text>
+        )}
+        {uRide > 0.1 && (
+          <text x={XEND + 20} y={Y2 + 4} fill="var(--green)" fontSize="11" fontFamily="var(--font-mono)" opacity={fade}>
+            reply
+          </text>
+        )}
+        <text x={(BX + XEND) / 2} y={Y2 + BH / 2 + 25} fill="var(--green)" fontSize="11.5"
+          fontFamily="var(--font-mono)" textAnchor="middle" opacity={eseg(t, 0.5, 0.56) * fade}>
+          +4.6 µs measured
         </text>
 
-        {MSGS.map((m) => {
-          const slot = ORDER.indexOf(m.ts);
-          const u = eseg(t, m.dep, m.dep + F1);          // drift toward B
-          const sortU = eseg(t, m.dep + F1, m.dep + F1 + F2); // cross B, snap into ts order
-          const groupU = eseg(t, G0, G1);                // whole group crosses C together
-          if (t < m.dep) return null;
+        {/* the one barrier, through both rows */}
+        <line x1={BX} y1={20} x2={BX} y2={H - 26} stroke="var(--amber)" strokeWidth="1.4"
+          strokeDasharray="5 5" />
+        <line x1={BX} y1={20} x2={BX} y2={H - 26} stroke="var(--amber)" strokeWidth="7"
+          opacity={0.12 + 0.3 * bGlow} />
+        <text x={BX} y={H - 8} fill="var(--amber)" fontSize="10.5" fontFamily="var(--font-mono)" textAnchor="middle">
+          commit barrier — the network confirms delivery here, with or without fault tolerance
+        </text>
 
-          const xB = lerp(lerp(-24, bx, u), midSlot(slot), sortU);
-          const x = lerp(xB, endSlot(slot), groupU);
-          const y = mid + m.lane * (1 - sortU);
-          const ordered = sortU >= 1 - 1e-4;
-          const committed = x >= cx;
-          const bFlash = pulse(t, m.dep + F1, m.dep + F1 + F2);
-          const cFlash = Math.max(0, 1 - Math.abs(x - cx) / 34) * (groupU > 0 && groupU < 1 ? 1 : 0);
-          const fade = 1 - eseg(t, FADE, 0.995);
-
-          return (
-            <g key={m.ts} opacity={Math.min((t - m.dep) * 24, 1) * fade}>
-              <circle
-                cx={x} cy={y} r={13}
-                fill={committed ? "rgba(25,158,112,0.18)" : "rgba(57,135,229,0.16)"}
-                stroke={committed ? "var(--green)" : ordered ? "var(--blue)" : "rgba(57,135,229,0.55)"}
-                strokeWidth={ordered && !committed ? 1.6 : 1.3}
-                strokeDasharray={!ordered ? "3 3" : "none"}
-              />
-              {bFlash > 0 && (
-                <circle cx={x} cy={y} r={13 + bFlash * 8} fill="none" stroke="var(--blue)"
-                  strokeWidth="1" opacity={bFlash * 0.8} />
-              )}
-              {cFlash > 0 && (
-                <circle cx={x} cy={y} r={13 + cFlash * 9} fill="none" stroke="var(--amber)"
-                  strokeWidth="1" opacity={cFlash * 0.85} />
-              )}
-              <text x={x} y={y + 3.5} fill="var(--ink)" fontSize="10" fontFamily="var(--font-mono)" textAnchor="middle">
-                {m.ts}
-              </text>
-            </g>
-          );
-        })}
+        {/* the request, racing itself */}
+        {[{ x: x1, y: Y1 }, { x: x2, y: Y2 }].map((d, i) => (
+          <g key={i} opacity={show}>
+            <circle cx={d.x} cy={d.y} r={10}
+              fill={i === 0 ? (x1 > BX ? "var(--red-dim)" : "var(--blue-dim)") : (x2 > BX ? "var(--green-dim)" : "var(--blue-dim)")}
+              stroke={i === 0 ? (x1 > BX ? "var(--red)" : "var(--blue)") : (x2 > BX ? "var(--green)" : "var(--blue)")}
+              strokeWidth="1.5" />
+            <text x={d.x} y={d.y + 3.5} fill="var(--ink)" fontSize="9" fontFamily="var(--font-mono)" textAnchor="middle">
+              op
+            </text>
+          </g>
+        ))}
       </svg>
     </div>
   );
 }
 
 const STATS = [
-  { v: "0.23", u: "%", k: "marginal cost of fault tolerance on the critical path", amber: true },
+  { v: "+4.6", u: "µs", k: "durable write riding inside the barrier — vs +2963 µs stacked after it", amber: true },
   { v: "+0", u: "RTT", k: "added by output commit — it is the fabric's own barrier" },
   { v: "5", u: "servers", k: "unmodified redis · memcached · nginx · node.js · postgresql" },
   { v: "0", u: `lost`, k: "of 191,073 acknowledged writes across injected crashes" },
@@ -142,7 +179,7 @@ export default function Hero() {
           transition={{ duration: 1.2, delay: 0.5 }}
           style={{ marginTop: 48 }}
         >
-          <HeroPipe />
+          <HeroRace />
         </motion.div>
 
         <motion.div
