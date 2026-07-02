@@ -30,19 +30,19 @@ def _overlap_panel(ax, title, deliv, dur_fabric, dur_stack, xmax, unit):
 
 def fig_overlap():
     fig, axes = plt.subplots(1, 2, figsize=(5.6, 2.45))
-    # left: MEASURED reproduction (loopback-UDP, us)
-    _overlap_panel(axes[0], 'measured (loopback reproduction)',
+    # left: MEASURED on the real engine (loopback, us)
+    _overlap_panel(axes[0], 'measured (real engine, loopback)',
                    2014, 4.59, 2963, 7500, 'µs')
-    axes[0].annotate('+0.23%', xy=(2018, 1.0), xytext=(2900, 0.62),
+    axes[0].annotate('+4.6 µs', xy=(2018, 1.0), xytext=(2900, 0.62),
                      fontsize=8.0, color=PAL['green'], va='center',
                      arrowprops=dict(arrowstyle='->', color=PAL['green'], lw=0.9))
     axes[0].text(5060, 0.0, '+2963 µs\n(commit 2×)', fontsize=7.6, color=PAL['red'],
                  ha='left', va='center')
-    # right: PROJECTED RDMA operating point (us): reliable delivery ~21us barrier,
+    # right: MODELED RDMA operating point (us): reliable delivery ~21us barrier,
     # 1-RTT replica ~1.5us hidden under it; out-of-regime serial durability ~100us.
-    _overlap_panel(axes[1], 'projected (RDMA, 1–2 µs RTT)',
+    _overlap_panel(axes[1], 'modeled (RDMA, 1–2 µs RTT)',
                    21, 1.5, 100, 158, 'µs')
-    axes[1].annotate('≈0%', xy=(21, 1.0), xytext=(40, 0.62),
+    axes[1].annotate('≈0 added', xy=(21, 1.0), xytext=(40, 0.62),
                      fontsize=8.0, color=PAL['green'], va='center',
                      arrowprops=dict(arrowstyle='->', color=PAL['green'], lw=0.9))
     axes[1].text(124, 0.0, '+100 µs', fontsize=7.6, color=PAL['red'], ha='left', va='center')
@@ -71,8 +71,8 @@ def fig_recovery_time():
     ax.set_ylabel('recovery time (ms)')
     ax.set_xticks([0, 250, 500, 750, 1000])
     ax.legend(loc='upper left')
-    ax.annotate('exact: recovered keys = live keys', xy=(500, 269), xytext=(120, 430),
-                fontsize=7.8, color=PAL['green'])
+    ax.text(990, 95, 'exact: recovered keys = live keys', ha='right',
+            fontsize=7.8, color=PAL['green'])
     finish(fig, P('fig_recovery_time.pdf'))
 
 # ---------------------------------------------------------------------------
@@ -84,13 +84,14 @@ def fig_sharding():
     colors = [PAL['gray'], PAL['gray'], PAL['blue'], PAL['gray'], PAL['orange'], PAL['green']]
     fig, ax = plt.subplots(figsize=(3.5, 2.5))
     bars = ax.bar(labels, vals, color=colors, width=0.66)
+    ax.tick_params(axis='x', labelsize=7.6)
     ax.axhline(821, color=PAL['blue'], ls=':', lw=1.0)
     ax.set_ylabel('throughput (k ops/s)')
     ax.set_ylim(0, 1720)
     for b, v in zip(bars, vals):
         ax.text(b.get_x()+b.get_width()/2, v+25, f'{v}', ha='center', fontsize=7.6)
     ax.annotate('shards beat one\n4-worker process\n(no lock contention)',
-                xy=(5.05, 1130), xytext=(2.4, 1700), ha='center', va='top',
+                xy=(5.2, 1180), xytext=(2.4, 1700), ha='center', va='top',
                 fontsize=7.5, color=PAL['green'],
                 arrowprops=dict(arrowstyle='->', color=PAL['green'], lw=0.9))
     ax.grid(axis='x', visible=False)
@@ -203,7 +204,7 @@ def fig_overhead():
     ax.axhline(100, color=PAL['gray'], ls=':', lw=0.9)
     for b, v in zip(bars, nginx):
         ax.text(b.get_x()+b.get_width()/2, v*100+0.4, f'{v*100:.0f}', ha='center', fontsize=7.8)
-    ax.set_title('Nginx (ApacheBench): libOS overhead', fontsize=9.2)
+    ax.set_title('Nginx (ApacheBench): shim overhead', fontsize=9.2)
     ax.grid(axis='x', visible=False)
     finish(fig, P('fig_overhead.pdf'))
 

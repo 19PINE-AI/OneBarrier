@@ -121,8 +121,10 @@ def fig_taxonomy():
                  mutation_scale=11, color=PAL['green'], lw=1.5, zorder=1))
     ax.add_patch(FancyArrowPatch((2.15, 2.55), (3.0, 1.35), arrowstyle='-|>',
                  mutation_scale=11, color=PAL['orange'], lw=1.5, zorder=1))
-    txt(2.45, 3.62, 'deterministic', fontsize=7.0, color=PAL['green'], rotation=30)
-    txt(2.4, 1.75, 'shared-everything', fontsize=7.0, color=PAL['orange'], rotation=-32)
+    txt(2.45, 3.62, 'deterministic', fontsize=7.0, color=PAL['green'], rotation=30,
+        bbox=dict(boxstyle='square,pad=0.1', fc='white', ec='none'))
+    txt(2.4, 1.75, 'shared-everything', fontsize=7.0, color=PAL['orange'], rotation=-32,
+        bbox=dict(boxstyle='square,pad=0.1', fc='white', ec='none'))
     finish(fig, P('fig_taxonomy.pdf'))
 
 
@@ -183,59 +185,83 @@ def fig_barrier_timeline():
     for x, lab in [(0.6, '0'), (4.0, '0.5 RTT'), (7.4, '1 RTT'), (9.6, '1.5 RTT')]:
         ax.plot([x, x], [0.18, 0.32], color=PAL['gray'], lw=0.9)
         ax.text(x, -0.05, lab, fontsize=7.4, color=PAL['gray'], ha='center')
-    # reliable-delivery commit barrier (what the fabric pays anyway)
+    # reliable-delivery commit barrier (what the network pays anyway)
     bar(0.6, 9.6, 2.35, 0.5, PAL['blue'], fc='#dbe6f3')
-    ax.text(5.1, 2.6, 'reliable-delivery commit barrier  ·  1.5 RTT',
+    ax.text(5.1, 2.6, 'commit barrier  ·  1.5 RTT  (condition R)',
             fontsize=8.2, ha='center', va='center', color=PAL['blue'], weight='bold')
-    ax.text(5.1, 2.18, 'the fabric crosses this for communication correctness, with or without FT',
+    ax.text(5.1, 2.18, 'the network crosses this to confirm delivery, with or without fault tolerance',
             fontsize=7.0, ha='center', color=PAL['gray'])
     # 1-RTT replication, hidden UNDER the barrier
     bar(0.6, 7.4, 1.5, 0.5, PAL['green'], fc='#e3f1ea')
-    ax.text(4.0, 1.75, 'recovery-log replication  ·  1 RTT',
+    ax.text(4.0, 1.75, 'replication to backups  ·  1 RTT  (condition D)',
             fontsize=8.2, ha='center', va='center', color=PAL['green'])
     # output release marker at the barrier
     ax.scatter([9.6], [1.0], s=70, marker='D', color=PAL['dark'], zorder=4)
-    ax.text(9.55, 0.62, 'output released', fontsize=7.4, ha='center', color=PAL['dark'])
+    ax.text(9.55, 0.62, 'reply released', fontsize=7.4, ha='center', color=PAL['dark'])
     ax.annotate('durable here', xy=(7.4, 1.55), xytext=(8.0, 1.1), fontsize=7.4,
                 color=PAL['green'], arrowprops=dict(arrowstyle='->', color=PAL['green'], lw=1))
-    ax.text(5.1, 3.05, 'output-commit hold $=$ reliable-delivery barrier  $\\Rightarrow$  FT adds no round trip',
+    ax.text(5.1, 3.05, 'durability wait $=$ delivery wait  $\\Rightarrow$  fault tolerance adds no round trip',
             fontsize=8.8, ha='center', color=PAL['dark'], weight='bold')
     finish(fig, P('fig_barrier_timeline.pdf'))
 
 
 # ---------------------------------------------------------------------------
-# Prior-art positioning: operating point (ms -> us) x approach (rewrite vs
-# transparent). OneBarrier owns transparent + microsecond + passive.
+# Prior systems x the conditions they satisfy (+ transparency, passivity).
+# Every prior row has at least one gap; the gap is where its cost came from.
 # ---------------------------------------------------------------------------
-def fig_positioning():
-    fig, ax = plt.subplots(figsize=(5.2, 3.0))
-    pts = [
-        ('Remus / VMware-FT', 0.7, 0.78, PAL['gray']),
-        ('LLFT', 1.2, 0.86, PAL['gray']),
-        ('HyCoR / RRC', 1.0, 0.70, PAL['gray']),
-        ('NOPaxos / Eris', 2.7, 0.45, PAL['purple']),
-        ('Temporal / Flink', 0.9, 0.16, PAL['orange']),
-        ('OneBarrier', 2.9, 0.88, PAL['green']),
+def fig_prior_matrix():
+    systems = ['Remus', 'VMware FT', 'LLFT', 'HyCoR', 'NOPaxos / Eris',
+               'Temporal / Flink', 'OneBarrier']
+    cols = ['order from\nnetwork (O)', 'commit\nbarrier (R)', 'durable in\nbarrier (D)',
+            'unmodified\napp', 'single\nexecutor']
+    # 1 = yes, 0 = no, 0.5 = partial, -1 = not applicable
+    M = [
+        [0,   0,   0,   1, 1],    # Remus: epoch checkpoints, output held
+        [0,   0,   0,   1, 0],    # VMware FT: lock-step (backup executes)
+        [0.5, 0,   0,   1, 0],    # LLFT: total order in HOST software; followers execute
+        [0,   0,   0,   1, 1],    # HyCoR: order log per window
+        [1,   0,   0,   0, 0],    # NOPaxos/Eris: in-network order but explicitly UNRELIABLE;
+                                  #   reliability/durability rebuilt by host quorum; apps rewritten
+        [-1, -1,  -1,   0, -1],   # rewrite frameworks: replication axes n/a, app rewritten
+        [1,   1,   1,   1, 1],    # OneBarrier
     ]
-    for name, x, y, c in pts:
-        big = name == 'OneBarrier'
-        ax.scatter(x, y, s=190 if big else 80, color=c, zorder=3,
-                   edgecolor='white', linewidth=1.2 if big else 0.6)
-        dy = 0.075 if not big else 0.085
-        ax.annotate(name, (x, y), textcoords='offset points',
-                    xytext=(0, 9 if big else 7), ha='center',
-                    fontsize=8.6 if big else 7.8,
-                    weight='bold' if big else 'normal',
-                    color=c if big else PAL['dark'])
-    ax.axhline(0.33, color='#d9dde1', lw=1.0, ls='--', zorder=1)
-    ax.text(0.18, 0.27, 'rewrite the app', fontsize=7.6, color=PAL['orange'])
-    ax.text(0.18, 0.94, 'transparent (unmodified)', fontsize=7.6, color=PAL['green'])
-    ax.set_xlim(0.2, 3.4); ax.set_ylim(0.05, 1.05)
-    ax.set_xticks([0.7, 2.9]); ax.set_xticklabels(['millisecond\n(software-ordered)', 'microsecond\n(in-network order)'])
-    ax.set_yticks([])
-    ax.set_xlabel('operating point'); ax.grid(False)
-    for s in ['left', 'right', 'top']: ax.spines[s].set_visible(False)
-    finish(fig, P('fig_positioning.pdf'))
+    fig, ax = plt.subplots(figsize=(4.6, 3.0))
+    for i, row in enumerate(M):
+        yy = len(systems) - 1 - i
+        for j, v in enumerate(row):
+            if v == 1:
+                ax.scatter(j, yy, s=120, marker='o', color=PAL['green'], zorder=3)
+                ax.scatter(j, yy, s=28, marker='o', color='white', zorder=4)
+            elif v == 0.5:
+                ax.scatter(j, yy, s=100, marker='o', facecolor='white',
+                           edgecolor=PAL['orange'], linewidth=1.6, zorder=3)
+                ax.scatter(j, yy, s=26, marker='o', color=PAL['orange'], zorder=4)
+            elif v == 0:
+                ax.scatter(j, yy, s=95, marker='X', color=PAL['red'], zorder=3)
+            else:
+                ax.scatter(j, yy, s=80, marker='_', color=PAL['gray'], lw=2, zorder=3)
+    ax.set_xticks(range(len(cols))); ax.set_xticklabels(cols, fontsize=7.6)
+    ax.set_yticks(range(len(systems))); ax.set_yticklabels(systems[::-1], fontsize=8.4)
+    for tick in ax.get_yticklabels():
+        if tick.get_text() == 'OneBarrier':
+            tick.set_fontweight('bold'); tick.set_color(PAL['green'])
+    ax.set_xlim(-0.5, len(cols)-0.5); ax.set_ylim(-0.5, len(systems)-0.5)
+    for s in ax.spines.values(): s.set_visible(False)
+    ax.tick_params(length=0); ax.grid(False)
+    ax.set_xticks(np.arange(-0.5, len(cols), 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, len(systems), 1), minor=True)
+    ax.grid(which='minor', color='#e6e8eb', lw=0.8); ax.grid(which='major', visible=False)
+    ax.xaxis.tick_top(); ax.xaxis.set_label_position('top')
+    from matplotlib.lines import Line2D
+    handles = [
+        Line2D([], [], marker='o', color=PAL['green'], ls='', ms=8, label='yes'),
+        Line2D([], [], marker='o', mfc='white', mec=PAL['orange'], ls='', ms=8, label='partial'),
+        Line2D([], [], marker='X', color=PAL['red'], ls='', ms=7, label='no'),
+        Line2D([], [], marker='_', color=PAL['gray'], ls='', ms=8, label='n/a'),
+    ]
+    ax.legend(handles=handles, loc='lower center', bbox_to_anchor=(0.5, -0.16),
+              ncol=4, fontsize=7.4, frameon=False, handletextpad=0.2, columnspacing=0.9)
+    finish(fig, P('fig_prior_matrix.pdf'))
 
 
 if __name__ == '__main__':
@@ -244,5 +270,5 @@ if __name__ == '__main__':
     fig_taxonomy()
     fig_ext_determinism()
     fig_barrier_timeline()
-    fig_positioning()
+    fig_prior_matrix()
     print('extension figures done')

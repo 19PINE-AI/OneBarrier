@@ -1,291 +1,549 @@
 % ===========================================================================
-% OneBarrier — body.tex  (Framing C: operating-point unifier)
+% OneBarrier — body.tex
+% Framing: four explicit conditions (O, R, D, L) under which transparent
+% fault tolerance adds nothing to the critical path; the determinism shim
+% carries the empirical weight; 1Pipe is the instantiation, explained from
+% first principles for readers who have never seen it.
 % ===========================================================================
 
 \section{Introduction}
+\label{sec:intro}
 
-Making a server fault-tolerant without rewriting it is \emph{transparent} fault tolerance, a four-decade
-goal that has repeatedly failed to reach production. The reason was never the snapshot; checkpointing a
-process is well understood. It was three \emph{coupled} costs a transparent system pays on the critical
-path, each a large fraction of latency at the operating point every prior system lived at:
+A fault-tolerant service keeps running when a machine crashes. Most services
+achieve this today by being written for it: the application externalizes its
+state into a replicated store, or is restructured around a framework that
+replays it deterministically. \emph{Transparent} fault tolerance is the
+alternative that requires no such rewrite: take an unmodified server
+binary---a stock Redis, Nginx, or PostgreSQL---and make it crash-recoverable
+entirely from the outside, so that clients observe a service that loses no
+acknowledged work and never repeats an effect.
+
+Transparent fault tolerance has been pursued for four decades and has never
+reached production. The obstacle was not checkpointing, which is well
+understood, but three costs that every transparent system has paid on the
+critical path of every request~\citep{elnozahy2002survey}:
 \begin{enumerate}[leftmargin=1.4em,itemsep=1pt,topsep=2pt]
-\item \textbf{Logging non-determinism.} To replay a recovered replica to the exact
-  state of the failed one, every non-deterministic event must be recorded, above all the
-  \emph{order} in which concurrent messages were processed. Order logging is the dominant
-  per-event overhead of deterministic replay~\cite{mashtizadeh2017castor,ocallahan2017rr}.
-\item \textbf{Coordinating a consistent cut.} A snapshot of a distributed system must be
-  globally consistent. The classical mechanism is Chandy--Lamport marker
-  propagation~\cite{chandy1985snapshots}, which captures in-flight channel state.
-\item \textbf{Output commit.} Output that has become externally visible cannot be un-sent
-  on recovery, so a transparent system must \emph{withhold} each externalizing message
-  until the state that produced it is durable~\cite{strom1985optimistic}. This output-hold
-  is what sank Remus~\cite{cully2008remus}: tens of milliseconds of latency on every reply.
+\item \textbf{The order log.} To rebuild a failed server's state, a recovery
+  system re-executes (\emph{replays}) the same inputs. Replay only works if
+  the inputs are re-applied in the same order, and on an ordinary network
+  that order is an accident of timing. Every message's arrival order must
+  therefore be recorded, and this order log dominates the overhead of
+  deterministic-replay systems~\citep{mashtizadeh2017castor,ocallahan2017rr}.
+\item \textbf{The coordinated snapshot.} A checkpoint of a distributed
+  system must be globally consistent: no node's snapshot may reflect the
+  receipt of a message that no snapshot shows being sent. The classical
+  solution, due to \citet{chandy1985snapshots}, coordinates
+  the cut by propagating marker messages and recording the contents of
+  in-flight channels.
+\item \textbf{The output hold.} A reply that has reached a client cannot be
+  un-sent. If the server crashes after replying but before the state that
+  produced the reply is durable, recovery would revive a server that has
+  forgotten a promise it already made. A transparent system must therefore
+  withhold every externally visible output until the producing state is
+  safely stored---the \emph{output-commit}
+  problem~\citep{strom1985optimistic}. This hold is what sank
+  Remus~\citep{cully2008remus}: tens of milliseconds of added latency on
+  every reply.
 \end{enumerate}
+Faced with these costs, industry took the other road: rewrite the
+application so that a purpose-built system holds the critical state, as in
+durable-execution frameworks (Temporal~\citep{temporal},
+DBOS~\citep{skiadopoulos2021dbos}, Restate~\citep{restate}) and exactly-once
+stream processors (Flink~\citep{carbone2015flink}). That road works, one
+rewrite at a time, but it abandons the installed base---the stock caches,
+web servers, brokers, and databases whose rewrite is precisely the cost
+transparency was meant to avoid.
 
-Faced with these costs, the industry chose the \emph{other} path: rewrite applications to externalize
-state into a system fault-tolerant by construction, through durable execution (Temporal~\cite{temporal},
-DBOS~\cite{skiadopoulos2021dbos}, Restate~\cite{restate}) and exactly-once stream processing
-(Flink~\cite{carbone2015flink}). That path won mindshare one rewrite at a time, but left the legacy fleet
-behind: stock Redis, Memcached, Nginx, application servers, and databases, whose rewrite is exactly the
-cost transparent FT was meant to avoid.
-
-\paragraph{This paper.} We revisit the abandoned transparent path and show it becomes practical under two
-co-designed shifts, neither sufficient alone.
-
-The \textbf{first} is a user-space \emph{determinism libOS}: an \texttt{LD\_PRELOAD} shim (no kernel, no
-application changes) that makes an unmodified server deterministically recoverable by virtualizing its
-residual \emph{local} non-determinism, the clock, the random source, and thread-scheduling order. Once
-message order is supplied externally this residual is small and closable: stock Redis, Memcached, Nginx,
-Node.js, and a multi-process PostgreSQL recover \emph{byte-identically} across a crash and a real-time gap
-at a few-percent overhead.
-
-The \textbf{second} is the operating point. Prior transparent systems paid the three
-costs over software-ordered, TCP-scale, hypervisor-logged \emph{millisecond} paths, where
-each was a large fraction of request latency. If instead all communication of
-\emph{share-nothing} servers is routed through an in-network total-order \emph{reliable}
-fabric, the three costs do not merely shrink; they \emph{change structure}. That fabric is
-1Pipe~\cite{li2021onepipe}, which establishes total order in a programmable switch and
-delivers reliably via a two-phase commit barrier over an RDMA fabric whose round-trip is
-$1$--$2\,\mu s$:
+\paragraph{Thesis.} This paper argues that the three costs are not intrinsic
+to fault tolerance. They are the price of running over a network that
+promises nothing: no ordering, no delivery confirmation, no redundancy. We
+state four explicit conditions under which all three costs disappear, prove
+each elimination as a structural property of the conditions, and demonstrate
+a system that meets them. Three conditions concern the network:
 \begin{itemize}[leftmargin=1.4em,itemsep=1pt,topsep=2pt]
-\item The fabric \emph{is} the order, so the replay order-log vanishes.
-\item A timestamp-$T$ snapshot replaces the Chandy--Lamport cut, and is in fact stronger,
-  because an order-preserving fabric has no in-flight channel state to capture.
-\item The output-commit barrier \emph{is} the fabric's reliable-delivery commit barrier,
-  so the durable-replica write completes under a barrier the system already pays for, and
-  fault tolerance adds no round trip.
+\item[\textbf{O}] (\emph{order}): the network delivers all messages, at all
+  receivers, in a single global order, identified by a timestamp on each
+  message.
+\item[\textbf{R}] (\emph{reliability barrier}): the network confirms
+  delivery through a \emph{commit barrier}---a point in time at which a host
+  knows that every message ordered up to timestamp $T$ has been delivered
+  and none can be lost.
+\item[\textbf{D}] (\emph{durability within the barrier}): each message is
+  copied to backup nodes, and the copy completes no later than the message's
+  commit barrier.
 \end{itemize}
-The single new engineering idea is the last point. OneBarrier replicates its recovery log
-via 1Pipe's native 1-RTT replication, scattering each input to the backups at its
-total-order position; that replication completes \emph{within} the $1.5$-RTT
-reliable-delivery barrier the output-commit hold already waits for. At the millisecond
-scale this overlap saves little. At $1$--$2\,\mu s$ RTT it is the difference between fault
-tolerance being a tax on every reply and a byproduct of the fabric.
+Under O the order log vanishes, because the network itself remembers the
+order (\S\ref{sec:conditions}). Under O and R a consistent snapshot needs no
+coordination at all: every node independently cuts at the same timestamp
+(\S\ref{sec:conditions}). Under R and D the output hold costs nothing,
+because the wait it requires---``is the producing state durable?''---ends at
+the same barrier the reply already waits for. Fault tolerance then adds no
+round trip to any request: it is a byproduct of guarantees the network
+provides for its own correctness.
 
-\paragraph{Scope, stated up front.} This is a realization-and-measurement result, not a new
-primitive, and three boundaries define it. (i) The conceptual idea is anticipated:
-LLFT~\cite{zhao2013llft} did transparent, order-log-free FT of unmodified socket applications via
-totally-ordered virtual time, and HyCoR~\cite{zhou2021hycor} did checkpoint-replay of unmodified
-containers; our contribution is the co-design with an \emph{in-network} fabric and the
-demonstration that the cost \emph{regime} changes at the microsecond operating point
-(\S\ref{sec:novelty}). (ii) Everything but the barrier magnitude is measured on stock binaries; the
-barrier coincidence is an architectural identity (\S\ref{sec:overview}) whose RDMA \emph{magnitude}
-is established by a discrete-event model at the published operating point and corroborated by real
-RDMA verbs over software RoCE, not a hardware testbed (\S\ref{sec:eval-overlap}). (iii) Durability
-is in-memory $f$-of-$k$ fail-stop tolerance via in-fabric replication, not crash-consistent
-persistence across correlated power loss (the FaRM/RAMCloud tradeoff~\cite{dragojevic2014farm}).
+The fourth condition falls to the host:
+\begin{itemize}[leftmargin=1.4em,itemsep=1pt,topsep=2pt]
+\item[\textbf{L}] (\emph{local determinism}): given the same ordered inputs,
+  the server computes the same state and outputs. Real servers violate this
+  locally---they read the clock, draw random numbers, and interleave
+  threads.
+\end{itemize}
+The bulk of our experimental work shows that L is closable \emph{from the
+outside}, for unmodified binaries, at a few percent overhead: a user-space
+shim, loaded ahead of the standard C library with the dynamic linker's
+\texttt{LD\_PRELOAD} mechanism, virtualizes time, randomness, and thread
+scheduling so that replay is byte-identical (\S\ref{sec:libos}).
+
+\paragraph{The system.} OneBarrier realizes the four conditions end to end.
+Conditions O, R, and D are supplied by 1Pipe~\citep{li2021onepipe}, a
+communication layer for data centers that establishes a single global
+message order inside the network switches and confirms delivery with an
+aggregated commit barrier, at round-trip times of one to two microseconds
+over RDMA (\S\ref{sec:fabric}; no familiarity with 1Pipe is assumed).
+Condition L is supplied by our determinism shim. The name records the
+central identity: the output-commit hold and the network's reliable-delivery
+barrier are \emph{one barrier}.
+
+\paragraph{Evidence.} We evaluate three kinds of claims and label each by
+the strength of its evidence (\S\ref{sec:eval}). Measured on stock,
+unmodified binaries: byte-identical crash recovery of Redis, Memcached,
+Nginx, and Node.js by deterministic replay, of a multi-process PostgreSQL by
+whole-process checkpoint, and of ten further applications spanning message
+brokers, databases, a network function, a stateful microservice, and
+infrastructure daemons; linearizability and exactly-once semantics under
+crash injection; recovery time and overhead. Measured on our engine: the
+\emph{ride-versus-stack} experiment, which shows that a durable write placed
+within the commit barrier adds $4.6\,\mu s$ to a request while the same
+write placed after the barrier adds three milliseconds and collapses
+throughput. Modeled: the magnitude of the same structure at 1Pipe's
+published microsecond operating point, via a calibrated discrete-event
+model, since we lack the programmable-switch testbed. The ordering and
+recovery protocols are machine-checked in TLA+.
 
 \paragraph{Contributions.}
 \begin{itemize}[leftmargin=1.4em,itemsep=1pt,topsep=2pt]
-\item A transparent determinism libOS that closes the local-non-determinism boundary
-  (time, randomness, threads) for real unmodified servers and recovers stock Redis,
-  Memcached, Nginx, and Node.js \emph{byte-identically by deterministic replay}, plus a
-  multi-process PostgreSQL via CRIU (\S\ref{sec:libos}, \S\ref{sec:eval-recovery}).
-\item The structural argument, and its measurement, that an in-network total-order reliable
-  fabric collapses the three coupled costs by construction: the output-commit hold and the
-  fabric's reliable-delivery barrier are one barrier, so FT adds no round trip
-  (\S\ref{sec:overview}, \S\ref{sec:eval-overlap}).
-\item An end-to-end evaluation on stock binaries (byte-identical recovery, linearizability
-  and exactly-once under crashes, bounded recovery time and overhead, resource cost against
-  same-engine HyCoR-style and LLFT-style mechanism baselines, active state-machine
-  replication (SMR), and CRIU), carried by an explicit fit-test to ten further applications
-  across five classes (\S\ref{sec:eval}, \S\ref{sec:ext}).
-\item Machine-checked TLA+ specifications of 1Pipe total order and of OneBarrier's
-  exactly-once recovery, and a candid novelty reckoning (\S\ref{sec:impl},
-  \S\ref{sec:novelty}).
+\item A precise statement of the four conditions (O, R, D, L) under which
+  transparent fault tolerance adds no critical-path cost, with structural
+  arguments for each cost's elimination and machine-checked protocol
+  specifications (\S\ref{sec:conditions}, Appendix~\ref{app:tla}). The
+  conditions double as an analysis: each prior transparent system lacked at
+  least one, and the one it lacked is the cost it paid (\S\ref{sec:why}).
+\item A user-space determinism shim that closes condition L for unmodified
+  binaries---virtual time, virtualized randomness, and share-nothing
+  sharding in place of thread scheduling---together with a characterization
+  of \emph{where} the local-determinism boundary lies: which servers can be
+  replayed and which must fall back to checkpointing (\S\ref{sec:libos}).
+\item An end-to-end system and evaluation: fifteen unmodified applications
+  recovered byte-identically, correctness verified under crash injection,
+  the ride-versus-stack structure measured, and cost quantified against
+  same-engine reimplementations of the mechanisms the conditions eliminate
+  (\S\ref{sec:system}, \S\ref{sec:eval}).
 \end{itemize}
 
-\section{Why Transparent FT Failed, and What Changed}
+\paragraph{Assumptions.} Three assumptions bound the claim, and we return to
+each (\S\ref{sec:limits}). Durability means surviving the fail-stop crash of
+up to $f$ of $k$ replicas whose copies live in memory, not surviving a
+correlated power loss---the standard trade of in-memory replicated systems
+such as FaRM~\citep{dragojevic2014farm}. Replay applies to servers that are
+share-nothing or cleanly shardable; shared-everything binaries take a
+checkpoint-only path. And clients must carry a stable identity across
+reconnection for end-to-end exactly-once semantics, which a closed fabric
+provides and an anonymous TCP client does not.
+
+\section{Why Transparent Fault Tolerance Has Been Expensive}
 \label{sec:why}
 
-\paragraph{The three coupled costs.} A transparent FT system must, on every externalizing
-message, guarantee that the producing state is recoverable. Three mechanisms make that
-guarantee, drawn from the classical rollback-recovery toolkit~\cite{elnozahy2002survey},
-and each was historically expensive (Figure~\ref{fig:threecosts}). \emph{Deterministic
-replay} reconstructs a failed replica's state by re-executing its inputs in the same order;
-that order is non-deterministic and must be logged, and message-order logging dominates
-replay overhead~\cite{mashtizadeh2017castor}. A \emph{consistent distributed snapshot} lets
-a recovered replica resume from a globally coherent point; Chandy--Lamport
-\cite{chandy1985snapshots} achieves it by injecting markers and recording channel state.
-And \emph{output commit}~\cite{strom1985optimistic} forbids releasing output until its
-producing state is durable. Remus~\cite{cully2008remus} paid this last cost as tens of
-milliseconds of buffered output; VMware FT~\cite{scales2010vmwareft} paid the order cost as
-lock-step execution. At the millisecond scale all three were a large fraction of request
-latency, which is why transparent FT never displaced application-level replication.
+\subsection{Three mechanisms, three costs}
+\label{sec:costs}
+
+Every transparent fault-tolerance system, whatever its packaging, must
+guarantee one thing: at the moment any output becomes externally visible,
+the state that produced it is recoverable. The classical rollback-recovery
+toolkit~\citep{elnozahy2002survey} offers three mechanisms toward that
+guarantee, and each carries a cost that lands on the critical path.
+
+\emph{Deterministic replay} reconstructs a failed node's state by
+re-executing its inputs. Its cost is the recording of every
+non-deterministic event---dominated, for a networked server, by message
+arrival order~\citep{mashtizadeh2017castor}. \emph{Consistent snapshots}
+bound how far back replay must reach. Their cost is coordination: markers,
+channel recording, and the protocol machinery of the Chandy--Lamport
+algorithm. \emph{Output commit} enforces
+the visibility guarantee itself. Its cost is latency: every reply waits for
+a durability round trip that the un-replicated server would not take. The
+difficulty is that the three interlock---weakening one strengthens the
+demands on the others---so prior systems could choose \emph{where} to pay
+but not \emph{whether}.
+
+\subsection{What each prior system paid}
+\label{sec:priorpaid}
+
+Table~\ref{tab:prior} and Figure~\ref{fig:prior} organize the major
+transparent systems by which of our four conditions they satisfied. Read
+this way, four decades of designs form a pattern: \emph{the condition a
+system lacked is the cost it paid---or the guarantee it gave up.}
+
+Remus~\citep{cully2008remus} satisfied none of the network conditions: it ran
+whole virtual machines over ordinary Ethernet, so it abandoned replay
+altogether (no order), checkpointed every few tens of milliseconds, and
+buffered all output until the next checkpoint was durable---paying the
+output hold in full. VMware FT~\citep{scales2010vmwareft} obtained order by
+brute force, recording and shipping every non-deterministic event so a
+backup could execute in lock-step; it paid the order log as serialized,
+uniprocessor execution. LLFT~\citep{zhao2013llft} came closest in spirit to
+condition O: it imposed a total order on messages in \emph{host software}
+(a leader-determined virtual synchrony~\citep{birman1987isis}), which
+eliminates the order log. But host-software ordering makes the primary a
+sequencer, its backups also execute every request (semi-active
+replication, its default mode), and---lacking R and D---it declined the output hold rather
+than making it cheap: the primary replies \emph{before} its backups know
+the ordering, and safety is recovered only because every peer is required
+to be an LLFT group that holds the ordering information the primary
+piggybacked on its messages. The guarantee is surrendered exactly at the
+boundary of that closed world. HyCoR~\citep{zhou2021hycor} combined
+checkpoints with short replay windows and logged message order within each
+window---the order log again, now on the critical path of every request.
+On the other side of the ledger, systems that \emph{do} take order from
+the network---NOPaxos~\citep{li2016nopaxos} and Eris~\citep{li2017eris},
+which sequence messages in a programmable switch---deliberately stop at
+ordering: their network primitive is explicitly \emph{unreliable},
+stamping and forwarding packets without ever confirming, holding, or
+copying them, so reliability and durability are rebuilt by a quorum
+protocol among the hosts. Every replica logs the full operation stream
+and eventually executes it (the leader synchronously, the others lazily),
+and applications are written against the protocol library rather than run
+as stock binaries. Derecho~\citep{jha2019derecho} brings ordered, reliable
+group communication to RDMA clusters, again as a library for rewritten,
+actively replicated applications. These systems satisfy O; none is
+transparent, and none makes durability a byproduct of a delivery barrier.
+The rewrite frameworks (Temporal~\citep{temporal},
+Flink~\citep{carbone2015flink}) sidestep all three costs by changing the
+application, which is the premise transparency rejects.
+
+\begin{table}[tb]\centering\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.16\linewidth}>{\raggedright\arraybackslash}p{0.27\linewidth}>{\raggedright\arraybackslash}p{0.22\linewidth}>{\raggedright\arraybackslash}p{0.24\linewidth}}
+\toprule
+system & where order comes from & where durability lives & cost paid on critical path \\
+\midrule
+Remus & none (no replay) & epoch checkpoint copy & output held tens of ms \\
+VMware FT & event log, lock-step & backup VM in lock-step & serialized execution \\
+LLFT & host-software total order & executing backups (in-memory) & host sequencer; $N\times$ execution; closed world \\
+HyCoR & per-window order log & checkpoint + log & order log per message \\
+NOPaxos / Eris & in-network order (unreliable) & host quorum of logs & app rewrite; $N\times$ (lazy) execution \\
+Temporal / Flink & application rewrite & external store & the rewrite itself \\
+\midrule
+\textbf{OneBarrier} & in-network order (O) & in-barrier replicas (D) & none beyond the barrier (R) \\
+\bottomrule
+\end{tabular}
+\caption{Prior systems, organized by the conditions of \S\ref{sec:intro}.
+The condition a system lacked is the cost it paid, or the guarantee it
+gave up.}
+\label{tab:prior}
+\end{table}
 
 \begin{figure}[tb]
 \centering
-\includegraphics[width=0.60\linewidth]{figures/fig_threecosts.pdf}
-\caption{The three coupled costs that doomed transparent FT at the millisecond scale, and
-how each collapses: the fabric kills the order-log, the distributed cut, and the
-output-commit hold; the determinism libOS kills the residual local non-determinism.}
-\label{fig:threecosts}
+\includegraphics[width=0.62\linewidth]{figures/fig_prior_matrix.pdf}
+\caption{Which of the four conditions each system satisfies, and whether it
+serves unmodified applications with a single executing replica. Every prior
+row has at least one gap; the gap is where its critical-path cost, or its
+surrendered guarantee, came from.}
+\label{fig:prior}
 \end{figure}
 
-\paragraph{The 1Pipe fabric.} 1Pipe~\cite{li2021onepipe} provides \emph{scalable
-total-order} communication: messages carry timestamps, an in-network barrier aggregation on
-a programmable switch establishes one global order, and a FIFO gate delivers in timestamp
-order. Its \emph{reliable} mode is a two-phase commit: end-to-end loss recovery, then an
-aggregated \emph{commit barrier} that makes a group delivery atomic, one extra round trip
-over best-effort. It also replicates natively: a client scatters a record to all replicas
-at a single total-order position in one round trip. The fabric therefore \emph{already}
-establishes order, \emph{already} crosses a commit barrier, and \emph{already} replicates,
-three mechanisms it provides for communication correctness alone, at a microsecond RDMA
-operating point where each is set by the network rather than by software
-(parameters in Appendix~\ref{app:model}).
+No prior system satisfied O, R, and D simultaneously, and none combined
+them with a demonstration that condition L---local determinism of real,
+unmodified binaries---is closable in practice. Those two gaps are what this
+paper fills.
 
-\paragraph{The operating-point argument.} Our claim is not that the idea is new but that the
-\emph{cost regime} is. Once order is established in the switch and replication completes under a barrier the
-communication layer already crosses, each cost becomes a structural consequence of the fabric, paid for
-communication correctness whether or not the system is fault-tolerant. This is a design conclusion, not a
-hardware speedup: the RTT sets only the magnitude of a margin that is zero in structure. Transparent
-passive FT is free at the reliable-fabric baseline at any RTT; the microsecond operating point is what
-makes that \emph{matter}.
+\section{Four Conditions That Make Fault Tolerance Free}
+\label{sec:conditions}
 
-\section{Overview: Fault Tolerance as a Byproduct of the Fabric}
-\label{sec:overview}
+\subsection{The conditions, precisely}
+\label{sec:defs}
 
-Figure~\ref{fig:arch} shows the architecture. An unmodified share-nothing server runs over
-the determinism libOS, which intercepts its POSIX surface: sockets are routed to the 1Pipe
-fabric, and local non-determinism (time, randomness, thread order) is virtualized so that,
-given the same input sequence, execution is a deterministic function of that sequence. The
-fabric supplies the input order and a reliable-delivery commit barrier; an in-fabric replica
-supplies durability, because each input is scattered to it in one RTT and is durable by the
-time the commit barrier passes.
+The idea that a distributed computation can be given one global order of
+events through logical timestamps is due to
+\citet{lamport1978time}, and replication has been built on ordered
+delivery ever since: atomic
+broadcast~\citep{birman1987isis,defago2004total}, and the state-machine
+approach~\citep{schneider1990smr,lamport1998parttime}, in which replicas fed
+identical inputs in identical order remain identical. Our conditions
+package these classical ingredients as properties a \emph{network} can
+provide to an \emph{unmodified} application:
+
+\begin{itemize}[leftmargin=1.4em,itemsep=2pt,topsep=2pt]
+\item[\textbf{O}] Every message carries a timestamp drawn from one global
+  order, and every receiver's messages are delivered in timestamp order.
+\item[\textbf{R}] For every timestamp $T$, each host eventually learns that
+  \emph{all} messages with timestamps $\le T$ have been delivered and are no
+  longer at risk of loss. We call the instant of learning this the
+  \emph{commit barrier for $T$}. (This is the delivery-confirmation phase of
+  a two-phase commit~\citep{gray1978notes}, aggregated across the network.)
+\item[\textbf{D}] When a message is delivered to its destination, a copy of
+  it reaches $k-1$ backup nodes---at the same position in the global
+  order---no later than that message's commit barrier.
+\item[\textbf{L}] The application is a deterministic function of its ordered
+  input sequence: same inputs, same order $\Rightarrow$ same state and same
+  outputs.
+\end{itemize}
+
+O, R, and D are properties a network either has or lacks; L is a property
+of the host and application, and \S\ref{sec:libos} shows how to manufacture
+it for unmodified binaries. Figure~\ref{fig:conditions} previews the
+mapping from the three classical costs to the conditions that eliminate
+them.
 
 \begin{figure}[tb]
 \centering
-\includegraphics[width=0.58\linewidth]{figures/fig_arch.pdf}
-\caption{OneBarrier: an unmodified server over the determinism libOS over the 1Pipe fabric.
-The fabric supplies the order and the reliable-delivery commit barrier. The recovery log is
-replicated by scattering each input to an in-fabric replica (1Pipe's 1-RTT replication),
-durable by the time the commit barrier passes. The libOS supplies local determinism,
-deterministic replay, and output suppression.}
-\label{fig:arch}
+\includegraphics[width=0.68\linewidth]{figures/fig_conditions.pdf}
+\caption{The three classical costs of transparent fault tolerance, and the
+condition that eliminates each. Conditions O, R, D are properties of the
+network; condition L (local determinism) is manufactured for unmodified
+binaries by a user-space shim.}
+\label{fig:conditions}
 \end{figure}
 
-The fabric pre-pays, for communication-correctness reasons, for exactly the three things FT
-needs. Each collapse below is a structural identity, not an optimization: the mechanism FT
-requires and the mechanism the fabric already runs are the same mechanism.
+\subsection{What each condition eliminates}
+\label{sec:props}
 
-\paragraph{(a) Order $\Rightarrow$ no replay order-log.} Because 1Pipe delivers messages in
-a global timestamp order, the recovered replica re-applies inputs in \texttt{msg\_ts} order
-with no recorded order-log. The dominant cost of deterministic replay is removed not by
-optimization but by relocation: the order lives in the fabric. This is the
-state-machine-replication property~\cite{schneider1990smr} realized over an in-network order
-source.
+\paragraph{O $+$ L: the order log vanishes.} Under L, the server's state
+after processing $n$ inputs is a function of those inputs and their order.
+Under O, that order is the timestamp order, which the network itself
+establishes and every delivered message carries. A recovering node therefore
+replays the saved inputs sorted by their timestamps and reaches exactly the
+failed node's state---no recorded order log, because the order was never an
+accident that needed recording. This is the state-machine-replication
+property~\citep{schneider1990smr} with the network, rather than a consensus
+protocol, acting as the sequencer.
 
-\paragraph{(b) Timestamp-$T$ snapshot $\Rightarrow$ empty-channel cut.} To snapshot, the
-libOS quiesces at a barrier timestamp $T$: it stops dispatching inputs with \texttt{ts}~$>T$,
-drains in-flight handlers for \texttt{ts}~$\le T$, and checkpoints. Every message is, by the
-identical \texttt{ts}~$\le T$ predicate, on the same side of the cut at sender and receiver,
-so the cut is consistent with \emph{no} marker propagation and \emph{no} captured channel
-state. It is strictly simpler than Chandy--Lamport, and uncoordinated: each node applies the
-same predicate independently.
+\paragraph{O $+$ R: the snapshot needs no coordination.} To checkpoint,
+every node applies the same rule independently: process all inputs with
+timestamps $\le T$, process none with timestamps $>T$, then save state. The
+commit barrier for $T$ (condition R) tells the node when it has received
+everything on its side of the line. Because sender and receiver classify
+every message by the identical predicate---its timestamp---no message can
+straddle the cut, so the cut is consistent \emph{and the channels are
+empty}: there is no in-flight state to record. This is strictly simpler
+than the classical marker protocol~\citep{chandy1985snapshots}, which exists
+precisely to handle networks where no such global line is available. The idea of cutting
+at a synchronized timestamp appears in clock-synchronized
+systems~\citep{corbett2012spanner,geng2018huygens}; condition O makes it
+exact rather than approximate, because the timestamps are the delivery
+order.
 
-\paragraph{(c) Output-commit $=$ commit barrier.} A server's reply is withheld until its
-producing state is durable. OneBarrier replicates the recovery log by scattering each input
-to the backups at its total-order position (1Pipe's 1-RTT replication), and holds the reply
-until the reliable-delivery commit barrier, the second phase of 1Pipe's 2PC, passes that
-input's timestamp. The fabric crosses that $\sim\!1.5$-RTT barrier regardless of fault
-tolerance, and the 1-RTT replication completes inside it (Figure~\ref{fig:barriertimeline}).
-These are not two barriers that overlap; they are the \emph{same} barrier, so FT adds no
-round trip, a margin zero by construction. The RTT sets only how large the avoided cost
-\emph{would} have been; \S\ref{sec:eval-overlap} quantifies the magnitude.
+\paragraph{R $+$ D: the output hold costs nothing.} Output commit requires
+a reply to wait until the state that produced it is durable. Under O and L,
+``the producing state'' is determined by the ordered input prefix, so the
+requirement reduces to: \emph{the inputs up to this reply's cause must be
+replicated}. Condition D says that replication completes by the commit
+barrier; condition R says the reply already waits for that barrier, because
+the network does not confirm delivery any earlier. The two waits---the
+durability wait fault tolerance needs and the delivery-confirmation wait
+the network imposes anyway---end at the same instant. They are not
+overlapping costs; they are one barrier
+(Figure~\ref{fig:barriertimeline}). Fault tolerance therefore adds no round
+trip at \emph{any} network speed. What the network's speed determines is
+the size of the avoided cost relative to a request: at millisecond round
+trips, an extra durability round trip was one large delay among several;
+at microsecond round trips, it is the difference between fault tolerance
+costing a multiple of request latency and costing nothing.
+\S\ref{sec:eval-overlap} measures both the structure and the magnitude.
 
 \begin{figure}[tb]
 \centering
-\includegraphics[width=0.56\linewidth]{figures/fig_barrier_timeline.pdf}
-\caption{The barrier coincidence, by construction. The recovery-log replication ($1$\,RTT)
-completes \emph{inside} the reliable-delivery commit barrier ($1.5$\,RTT) the fabric crosses
-for communication correctness regardless of fault tolerance, so the producing input is
-durable before output may be released. The output-commit hold and the reliable-delivery
-barrier are the same barrier; FT adds no round trip, independent of the absolute RTT.}
+\includegraphics[width=0.58\linewidth]{figures/fig_barrier_timeline.pdf}
+\caption{Condition D inside condition R. The replication of a message to
+its backups (1 round trip) completes before the commit barrier
+($\sim$1.5 round trips) that the network crosses to confirm delivery
+whether or not fault tolerance is enabled. The reply's durability wait and
+its delivery-confirmation wait end at the same barrier, so fault tolerance
+adds no round trip.}
 \label{fig:barriertimeline}
 \end{figure}
 
-What makes (c) work in practice is (a)+(b)+the libOS: the recovered replica is a
-deterministic function of the fabric-ordered input prefix up to the last durable barrier, so
-``the producing state is durable'' reduces to ``the input prefix is replicated,'' which the
-fabric already does.
+These three arguments are structural, and we keep them honest two ways: the
+ordering and recovery protocols are specified and machine-checked in TLA+
+(Appendix~\ref{app:tla}), and the third argument is tested experimentally
+by attempting to \emph{break} it---placing the durable write after the
+barrier instead of within it, and watching the cost reappear
+(\S\ref{sec:eval-overlap}).
 
-\section{A Transparent Determinism libOS for Unmodified Servers}
+\subsection{A network that meets O, R, and D}
+\label{sec:fabric}
+
+The conditions are not hypothetical. 1Pipe~\citep{li2021onepipe} is a
+communication layer for data-center networks, demonstrated on commodity
+RDMA network cards and a programmable switch~\citep{bosshart2014p4}, that
+provides exactly O and R, and contains the replication primitive D needs.
+Since we build on it, we describe it here from first principles.
+
+\emph{Ordering (O).} Every sender stamps each message with a timestamp from
+its local clock. Network switches, which see all traffic, continuously
+compute and propagate a \emph{barrier}: the smallest timestamp that could
+still be carried by any message in flight through them. A receiver holds
+arriving messages briefly and releases them in timestamp order once the
+barrier has passed them. The result is one global delivery order without
+any central sequencer---the switch aggregation is the sequencer, and it
+scales with the network rather than with any single host.
+
+\emph{Reliability (R).} On top of ordered best-effort delivery, 1Pipe's
+reliable mode runs a two-phase commit: messages are first delivered and
+acknowledged end-to-end (recovering any losses), and a second, aggregated
+barrier round then confirms to every participant that delivery up to
+timestamp $T$ is complete. This commit barrier costs about half a round
+trip beyond the one round trip of delivery, roughly $1.5$ round trips in
+all. On RDMA hardware---network cards that read and write remote memory
+directly, without involving the remote CPU---a round trip is $1$--$2\,\mu
+s$, and 1Pipe reports reliable delivery in roughly $21\,\mu s$ at scale,
+end to end.
+
+\emph{Replication (D).} Because delivery order is global, a sender can
+\emph{scatter} copies of one message to several destinations at a single
+position in the global order, in one round trip. Directing each input's
+copies at $k-1$ backup nodes gives condition D: the copies land within the
+$1.5$-round-trip window the commit barrier already spans.
+
+Nothing in \S\ref{sec:props} depends on these particular mechanisms or
+speeds; any network meeting the definitions would do. A host-software
+sequencer, for example, meets O at the cost of becoming a throughput
+bottleneck---a cost we measure in \S\ref{sec:eval-cost}. What the
+in-network realization contributes is that O, R, and D are provided
+\emph{below} the application at microsecond scale, where the three
+classical costs would otherwise be the dominant share of request latency.
+
+\section{Meeting Condition L: Determinism for Unmodified Binaries}
 \label{sec:libos}
 
-The fabric supplies order; the libOS must supply everything else an \emph{unmodified} binary
-needs to replay deterministically. It is three composable \texttt{LD\_PRELOAD} libraries
-totalling $\sim$1{,}000 lines of C, in the SocksDirect~\cite{li2019socksdirect} kernel-bypass
-lineage, with no kernel module and no application change.
+The network supplies the input order; the host must supply everything else
+a binary needs to be a deterministic function of that order. This section
+describes the OneBarrier determinism shim: three composable libraries,
+about a thousand lines of C in total, loaded with \texttt{LD\_PRELOAD} so
+that the dynamic linker resolves the application's calls to standard
+functions (\texttt{recv}, \texttt{clock\_gettime}, \dots) against our
+interceptors before the C library's. No kernel module, no recompilation, no
+application change. The shim descends from the user-space socket
+interposition of SocksDirect~\citep{li2019socksdirect}.
 
-\subsection{The determinism boundary}
-Once message order is external, a server's remaining non-determinism is \emph{local}: values
-it reads from the clock and the random source, and, if multi-threaded, the order its threads
-interleave. We found, and the libOS closes, a sharp boundary between two kinds of time read
-(Figure~\ref{fig:boundary}). \emph{Request-driven} reads (one per request, e.g.\ a timestamp
-stamped into a reply) replay correctly by sequence position. \emph{Timer-driven} reads (a
-background timer firing on wall-clock, e.g.\ Redis's \texttt{serverCron}, Nginx's cached-time
-update, Memcached's LRU maintainer) fire a \emph{different number of times} between record and
-replay, desynchronizing any position-indexed scheme. The virtual clock closes this boundary by
-making time a function of the input prefix rather than of read count or timer firings.
+\subsection{Which servers can be made deterministic: a fit test}
+\label{sec:fittest}
+
+Not every binary can be replayed, and the design itself says which can. A
+server extends transparently along the \emph{replay} path if four questions
+answer yes: Is it deterministic once input order and local non-determinism
+are fixed? Is it share-nothing (or cleanly shardable into single-threaded
+instances)? Does its input arrive through sockets the shim can intercept?
+Is each request's output bounded, so there is a definite point at which the
+effect is acknowledged? Servers that fail the share-nothing test---
+multi-process databases with shared memory, arbitrary multi-threaded
+binaries---take a second, fully general path: whole-process
+\emph{checkpointing}, which needs no determinism at all
+(\S\ref{sec:criu}). Figure~\ref{fig:taxonomy} shows the two paths and the
+fifteen applications this paper routes through them. The replay path is the
+interesting one---it is the path on which fault tolerance is free---so the
+rest of this section closes, one by one, the sources of local
+non-determinism that stand in its way: time, randomness, and threads.
+
+\begin{figure}[tb]
+\centering
+\includegraphics[width=0.56\linewidth]{figures/fig_taxonomy.pdf}
+\caption{The fit test routes an unmodified server to one of two paths:
+order-log-free deterministic replay (share-nothing, socket-based servers)
+or whole-process checkpointing via CRIU (any shared-everything binary).}
+\label{fig:taxonomy}
+\end{figure}
+
+\subsection{Time: the boundary between two kinds of clock reads}
+\label{sec:vclock}
+
+Fixing time sounds simple---return recorded values---but a sharp boundary
+separates the reads that a naive scheme handles from those that break it
+(Figure~\ref{fig:boundary}). \emph{Request-driven} reads happen a fixed
+number of times per request (a timestamp formatted into a reply); replaying
+them by sequence position works. \emph{Timer-driven} reads come from
+background timers that fire on wall-clock time---Redis's periodic
+housekeeping (\texttt{serverCron}), Nginx's cached-time update, Memcached's
+LRU maintainer. Between the original run and the replay, real time elapses
+differently, so such a timer fires a \emph{different number of times}, and
+any scheme that replays time values by their position in the read sequence
+falls out of step.
 
 \begin{figure}[tb]
 \centering
 \includegraphics[width=0.50\linewidth]{figures/fig_boundary.pdf}
-\caption{The determinism boundary. Under wall-clock time a background timer fires a different
-number of times between record and replay, so timer-driven reads desync (left). The virtual
-clock advances one tick per input event, making every time read count-independent and
-identical across recovery (right).}
+\caption{The determinism boundary for time. Under the wall clock, a
+background timer fires a different number of times in the original run and
+the replay, so position-indexed replay desynchronizes (left). The virtual
+clock advances only at input events, making every read a function of the
+input prefix, identical across replay (right).}
 \label{fig:boundary}
 \end{figure}
 
-\subsection{Virtual clock: time virtualization}
-The libOS intercepts the libc time surface (\texttt{gettimeofday}, \texttt{clock\_gettime},
-\texttt{time}) and returns \emph{virtual} time $t = \mathrm{base} + \mathrm{ticks}$, where
-\texttt{ticks} advances only at a socket read, so the value is a \emph{count-independent} function
-of the input prefix: how many times, or from which timer, it is read does not matter, which is
-what stops a timer-driven read from desyncing replay. We advance by the \emph{real inter-arrival
-delta}, logged per input, so virtual time tracks the wall clock at record and the recovered run
-replays the same deltas: wall-clock-faithful \emph{and} byte-identical, unlike a fixed delta that
-would expire TTLs on an input-count schedule. Over the real fabric the message's own total-order
-timestamp \emph{is} that logged, replicated source, so virtual time is just
-$\mathrm{base} + (\texttt{msg\_ts} - \texttt{msg\_ts}_0)$ (Appendix~\ref{app:libos},
-Listing~\ref{lst:vclock}). The sharpest demonstration is Nginx: the HTTP \texttt{Date} header,
-formatted deep inside Nginx from its cached time, is byte-identical on live and recovered instances
-across a multi-second gap.
+The shim's \emph{virtual clock} closes the boundary by making time a
+function of the input prefix rather than of how often it is read. It
+intercepts the C library's time surface (\texttt{gettimeofday},
+\texttt{clock\_gettime}, \texttt{time}) and returns
+$t=\mathrm{base}+\mathrm{ticks}$, where \texttt{ticks} advances only when
+an input message arrives---by the \emph{real} inter-arrival gap, which is
+logged during the original run and replayed from the log during recovery.
+Two properties follow. The value is count-independent: a timer that fires
+three times or five times between two requests reads the same virtual time,
+so timer-driven reads cannot desynchronize replay. And the clock remains
+faithful to wall time, so TTLs expire at true wall-clock moments rather
+than on an input-count schedule. Over the fabric, the logged gap is simply
+derived from the message's own global timestamp, which is already durable
+under condition D---the time log and the input log are the same log.
+(Implementation details and code in Appendix~\ref{app:libos}.) The
+sharpest demonstration is Nginx: the \texttt{Date} header it formats deep
+inside its own time cache is byte-identical between the live run and a
+recovery performed seconds later.
 
-\subsection{Randomness virtualization}
+\subsection{Randomness: a per-consumer boundary}
 \label{sec:rng}
-A server's randomness reaches it by paths that defeat library interposition: V8/Node.js, OpenSSL,
-and \texttt{arc4random} issue the \emph{raw} \texttt{getrandom} syscall, and Redis~6 seeds its
-SipHash dictionary hash by reading \texttt{/dev/urandom} through \texttt{fopen}, whose internal
-\texttt{openat}/\texttt{read} bypass the public symbols. The libOS therefore intercepts at the
-syscall level: a seccomp-BPF user-notification filter traps \texttt{getrandom} and fills the buffer
-from a deterministic seeded stream, and \texttt{/dev/urandom} is redirected via a private mount
-namespace to a deterministic file. This pins every consumer that \emph{routes through} those
-interfaces, including OpenSSL's DRBG and Redis's SipHash seed, whose
-\texttt{SPOP}/\texttt{SRANDMEMBER} order recovers identically where a real-device control differs
-entirely. One consumer is instructive: V8's \texttt{Math.random} seeds from the \texttt{RDRAND}
-instruction, which takes no syscall and bypasses both traps (the \texttt{RDRAND} hole of
-\S\ref{sec:limits}); we pin it at the layer that owns it, a recorded V8 \texttt{--random-seed} launch
-flag, in the same class as \texttt{setarch -R} for address-space layout. The lesson is that the
-determinism boundary is per-\emph{consumer}, not per-interface (Appendix~\ref{app:libos}).
 
-\subsection{Threads: deterministic scheduling vs.\ share-nothing sharding}
+Randomness reaches a server by more paths than the C library, and each path
+must be pinned where it actually flows. Node.js's V8 engine, OpenSSL, and
+\texttt{arc4random} issue the raw \texttt{getrandom} system call,
+bypassing any intercepted library function; Redis seeds its hash tables by
+reading \texttt{/dev/urandom} through \texttt{fopen}, whose internal calls
+likewise bypass the public symbols. The shim therefore intercepts at the
+system-call level: a seccomp filter (a kernel mechanism that lets a
+designated user-space supervisor service chosen system calls) traps
+\texttt{getrandom} and fills the buffer from a seeded deterministic
+stream, and a private mount namespace redirects \texttt{/dev/urandom} to a
+deterministic file. This pins every consumer that routes through those
+interfaces, including OpenSSL's random generator and Redis's hash seed:
+the command orderings that depend on that seed (\texttt{SPOP},
+\texttt{SRANDMEMBER}) recover identically, where an unpinned control run
+differs entirely. One consumer
+illustrates the limit: V8 seeds \texttt{Math.random} from the CPU's
+\texttt{RDRAND} instruction, which involves no system call at all; we pin
+it at the layer that owns it, a recorded \texttt{--random-seed} launch
+flag (\S\ref{sec:limits}). The general lesson: the randomness boundary is
+per-\emph{consumer}, not per-interface.
+
+\subsection{Threads: sharding, not scheduling}
 \label{sec:threads}
-For a multi-threaded server the OS chooses the order threads enter critical sections, so
-shared-state evolution is non-deterministic. A Kendo-style~\cite{olszewski2009kendo} deterministic
-scheduler lets a thread take a top-level lock only when its logical clock is the global minimum,
-making the interleaving a function of the clocks, but it serializes critical sections and collapses
-throughput on a contended server (Figure~\ref{fig:threads}a), the wall the
-deterministic-multithreading literature~\cite{olszewski2009kendo,bergan2010coredet} and
-execute-then-verify SMR~\cite{kapritsos2012eve,guo2014rex} sidestep only by relaxing strict
-determinism. The practical answer is \emph{share-nothing sharding}, which high-performance servers
-already use: $N$ single-thread instances, each deterministic by construction, with no lock
-contention, out-throughputting one multi-worker process while staying deterministic
-(Figure~\ref{fig:threads}b); the deterministic scheduler remains the fallback for genuinely shared
-mutable state. Single-thread servers still spawn timer-driven maintenance threads (e.g.\ Memcached's
-LRU maintainer); we disable these so the shard's state evolves purely from the request stream and
-the virtual clock.
+
+In a multi-threaded server the kernel scheduler decides the order in which
+threads enter critical sections, so shared state evolves
+non-deterministically. Deterministic-scheduling systems in the style of
+Kendo~\citep{olszewski2009kendo,bergan2010coredet} fix this by admitting
+threads to locks in logical-clock order, but the fix serializes critical
+sections; on a contended server the throughput collapse is severe
+(Figure~\ref{fig:threads}a), which is the recognized wall of that
+literature and of execute-then-verify
+replication~\citep{kapritsos2012eve,guo2014rex}. We adopt the answer that
+high-performance servers already practice for other reasons:
+\emph{share-nothing sharding}. Run $N$ single-threaded instances, each
+deterministic by construction, each its own replay unit; there is no lock
+contention to serialize. Four single-threaded Memcached shards out-throughput
+one four-worker Memcached while remaining deterministic
+(Figure~\ref{fig:threads}b). The deterministic scheduler remains a fallback
+for genuinely shared mutable state. One residual: single-threaded servers
+still spawn timer-driven maintenance threads (Memcached's LRU maintainer);
+the shim disables these so a shard's state evolves purely from the request
+stream and the virtual clock.
 
 \begin{figure}[tb]
 \centering
@@ -299,134 +557,200 @@ the virtual clock.
 \caption{Share-nothing shards beat one multi-worker process.}
 \label{fig:sharding}
 \end{subfigure}
-\caption{Threads: the deterministic scheduler collapses throughput on a contended server (a),
-so the performant deterministic path is share-nothing sharding (b), where four single-thread
-Memcached shards exceed one four-worker process while staying deterministic (each shard pays
-$\sim$10\% FT overhead; the aggregate is sub-linear only because shards and load generator
-contend for one host's cores and NIC).}
+\caption{Meeting condition L for multi-threaded servers. (a) A Kendo-style
+deterministic scheduler collapses throughput on a contended server. (b) The
+practical path is share-nothing sharding: four single-thread Memcached
+shards exceed one four-worker process while staying deterministic (each
+shard pays $\sim$10\% shim overhead; the aggregate is sub-linear because
+shards and the load generator share one host's cores and NIC).}
 \label{fig:threads}
 \end{figure}
 
-\subsection{Process-state checkpoint and bounded recovery}
+\subsection{Bounding replay: checkpoints, and the general path}
 \label{sec:criu}
-Replay from process start costs time linear in the log length; a checkpoint bounds it to the
-post-checkpoint tail. An application-native snapshot (a Redis RDB) plus tail-replay works for a
-single process. The general, any-binary mechanism is CRIU~\cite{criu} (in the userspace-checkpoint
-lineage of DMTCP~\cite{ansel2009dmtcp} and BLCR~\cite{hargrove2006blcr}): it checkpoints the whole
-process, namely memory, file descriptors, threads, \emph{and} the in-memory virtual clock, so a
-restore needs no replay of pre-checkpoint history. We verify CRIU checkpoint/restore of the hardest
-app class, a multi-process PostgreSQL (postmaster plus background workers, SysV and POSIX shared
-memory, WAL): data is byte-identical across the crash and the restored server is live
-(\S\ref{sec:eval-recovery}). PostgreSQL exercises the \emph{checkpoint/restore} path, not
-deterministic replay: a shared-everything database has cross-process non-determinism (shared-buffer
-access order across backends) that neither sharding nor a per-process virtual clock removes, so it lives
-in the \emph{checkpoint-only} regime Remus and HyCoR also occupy, while the four single-thread servers
-take the order-log-free replay path (\S\ref{sec:limits}).
 
-\subsection{Output suppression and exactly-once}
-On replay the server re-emits outputs it already sent before the crash. The libOS suppresses
-these via a per-client \texttt{(client, seq)} high-water-mark, the exactly-once-RPC mechanism of
-RIFL~\cite{lee2015rifl} applied to recovery: an output whose sequence is at or below the client's
-last acknowledged sequence is dropped, so each acknowledged effect is externalized exactly once.
-The high-water-mark map is itself durable, captured in every timestamp-$T$ snapshot and
-reconstructed by the same dedup fold that replays the log, so suppression survives a crash that
-loses all volatile state. The resulting exactly-once and no-lost-acknowledged-write invariants are
-machine-checked in TLA+ (\S\ref{sec:impl}, Appendix~\ref{app:tla}). This is \emph{server-side}
-suppression; end-to-end exactly-once additionally requires the \emph{client} to carry a stable identity
-across the reconnect a primary failure forces, RIFL's cooperating-client assumption, which the closed
-fabric satisfies (a client is a fabric endpoint with a durable id) but a stock external TCP client
-reconnecting on a fresh 5-tuple does not (\S\ref{sec:limits}).
+Replaying from process start costs time proportional to the log; a
+checkpoint bounds recovery to the tail after it. For a single process an
+application-native snapshot (such as a Redis RDB file) plus tail replay
+suffices. The general mechanism, and the fallback path for binaries that
+fail the fit test, is CRIU~\citep{criu}, a Linux facility that checkpoints a
+whole process tree---memory, file descriptors, threads, and, in our use,
+the shim's virtual clock---so a restore needs no replay of pre-checkpoint
+history (in the user-space checkpointing lineage of
+DMTCP~\citep{ansel2009dmtcp} and BLCR~\citep{hargrove2006blcr}). We verify
+the hardest case in this class: a multi-process PostgreSQL (postmaster plus
+background workers, shared memory segments, write-ahead log)
+checkpoint-restores with byte-identical data and a live server
+(\S\ref{sec:eval-recovery}). PostgreSQL exercises the checkpoint path
+\emph{only}: a shared-everything database has cross-process
+non-determinism (the order backends touch shared buffers) that neither
+sharding nor a per-process virtual clock removes, so it lives in the
+checkpoint-only regime that Remus and HyCoR also occupy, while the
+share-nothing servers take the replay path on which fault tolerance is
+free.
 
-\section{Fault Tolerance over the Fabric}
-\label{sec:ft}
+\subsection{Output suppression: exactly-once across recovery}
+\label{sec:suppress}
 
-The engine that ties the libOS to the fabric is a deterministic-replay state machine with a
-durable ordered log and timestamp-$T$ snapshots (Algorithm~\ref{alg:ft}). On the live path it
-applies fabric-delivered inputs in \texttt{msg\_ts} order, appends \texttt{(ts, op)} to the
-durable log, scatters each input to the backup replicas in one RTT, and releases an output only
-once the reliable-delivery commit barrier has passed its producing input's timestamp, that is,
-once that input prefix is replicated (point (c) of \S\ref{sec:overview}). When the barrier passes
-a snapshot timestamp $T$ it takes an uncoordinated empty-channel checkpoint (point (b)). On
-recovery, a replacement replica loads the latest snapshot, replays the durable log suffix in
-timestamp order (no order-log), and state-transfers any prefix it is still missing from a surviving
-replica up to the live cut. Replay runs the same transition function with side effects disabled
-(the \textit{live} flag of Algorithm~\ref{alg:ft}); the per-client high-water-mark drops every
-output the suffix re-applies, so the replayed effects are exactly-once.
+During replay the server re-computes---and tries to re-send---outputs it
+already sent before the crash. The shim suppresses duplicates with a
+per-client high-water mark: each output carries a per-client sequence
+number, and an output at or below the client's last acknowledged sequence
+is dropped. This is the exactly-once RPC discipline of
+RIFL~\citep{lee2015rifl} applied to recovery. The high-water-mark table is
+itself part of the state: it is captured in every timestamp-$T$ snapshot
+and rebuilt by the same replay that rebuilds the application, so
+suppression survives a crash that loses all volatile state. The resulting
+invariants---every acknowledged write survives, no effect is externalized
+twice---are machine-checked in TLA+ (Appendix~\ref{app:tla}). Suppression
+is server-side; end-to-end it additionally requires the \emph{client} to
+present a stable identity when it reconnects after a failure. A fabric
+endpoint has one by construction; an anonymous external TCP client
+reconnecting from a fresh address does not (\S\ref{sec:limits}).
 
-\paragraph{Membership, durability, and recovery.} The configuration is $k$ replicas; each input is
-scattered to all $k$ at its total-order position, so it is durable once held by any survivor:
-in-memory $f$-of-$k$ fail-stop tolerance. Membership rides on the fabric: 1Pipe's failure detector
-(tens of microseconds) excises a dead peer and the survivors' commit barrier resumes over the
-reduced membership. Recovery converges only while replay outruns the live stream, so the recovering
-replica uses the fabric's barrier-hold as backpressure, which roughly doubles the live rate a
-recovery can outrun (Appendix~\ref{app:eval}); the real engine's recovery under concurrent client
-load is exercised by the crash-injection test of \S\ref{sec:eval-correct}. A real-hardware
-saturation sweep and automated primary-promotion / view-change are future work (\S\ref{sec:limits}).
+\section{The OneBarrier System}
+\label{sec:system}
+
+\subsection{Architecture and protocol}
+
+Figure~\ref{fig:arch} assembles the pieces. An unmodified share-nothing
+server runs over the determinism shim; its sockets are routed onto the
+fabric, and its local non-determinism is virtualized (condition L). The
+fabric delivers inputs in global timestamp order (O), confirms them at the
+commit barrier (R), and scatters each input to $k-1$ backup nodes within
+that barrier (D). Algorithm~\ref{alg:ft} gives the per-replica protocol.
+
+\begin{figure}[tb]
+\centering
+\includegraphics[width=0.58\linewidth]{figures/fig_arch.pdf}
+\caption{OneBarrier. An unmodified server runs over the determinism shim
+(condition L), which routes its sockets onto a fabric providing global
+order (O), a delivery commit barrier (R), and in-barrier replication of
+every input (D). Replies are released at the barrier---the same barrier
+the fabric crosses to confirm delivery.}
+\label{fig:arch}
+\end{figure}
+
+On the live path, the engine applies fabric-delivered inputs in timestamp
+order, appends each to a durable ordered log, scatters it to the backups
+(one round trip, within the barrier), and releases an output only when the
+commit barrier passes the timestamp of the input that produced it. When the
+barrier passes a snapshot point $T$, the engine quiesces---finishes inputs
+$\le T$, defers inputs $>T$---and checkpoints; by \S\ref{sec:props} this
+cut is consistent with no coordination. On recovery, a replacement loads
+the latest snapshot, replays the log suffix in timestamp order (no order
+log), fetches from a survivor any prefix it is missing, and resumes live
+delivery. Replay runs the same transition function with external effects
+disabled; the high-water marks drop every output the suffix re-derives, so
+recovery is exactly-once.
 
 \begin{algorithm}[tb]
 \small
 \caption{OneBarrier live and recovery paths (per replica).}
 \label{alg:ft}
 \begin{algorithmic}[1]
-\Procedure{OnDeliver}{$(\mathit{ts}, \mathit{op})$, \textit{live}}\Comment{fabric delivers in \texttt{ts} order}
+\Procedure{OnDeliver}{$(\mathit{ts}, \mathit{op})$, \textit{live}}\Comment{fabric delivers in \texttt{ts} order (O)}
   \State $\mathit{log}.\textsc{append}(\mathit{ts}, \mathit{op})$
-  \If{\textit{live}}\Comment{durability: every live input is replicated}
-     \State scatter input to replicas at \texttt{ts} (1 RTT, 1Pipe replication)
+  \If{\textit{live}}
+     \State scatter input to $k-1$ backups at position \texttt{ts}\Comment{1 RTT, inside the barrier (D)}
   \EndIf
-  \State $\mathit{out} \gets \textsc{Apply}(\mathit{op})$\Comment{deterministic state transition}
+  \State $\mathit{out} \gets \textsc{Apply}(\mathit{op})$\Comment{deterministic transition (L)}
   \If{$\mathit{out}.\mathit{seq} > \mathit{hwm}[\mathit{out}.\mathit{client}]$}\Comment{not yet externalized}
      \State $\mathit{hwm}[\mathit{out}.\mathit{client}] \gets \mathit{out}.\mathit{seq}$
-     \If{\textit{live}} release $\mathit{out}$ once commit barrier passes \texttt{ts}\Comment{output commit}
+     \If{\textit{live}} release $\mathit{out}$ when the commit barrier passes \texttt{ts}\Comment{output commit $=$ barrier (R)}
      \EndIf
-  \EndIf\Comment{on replay, suppressed outputs are dropped: exactly-once}
+  \EndIf\Comment{on replay, duplicate outputs are dropped: exactly-once}
 \EndProcedure
-\Procedure{OnBarrier}{$T$}\Comment{commit barrier passes snapshot point $T$}
-  \State quiesce inputs $> T$; drain handlers $\le T$; \textsc{Checkpoint}($T$)\Comment{empty-channel cut}
+\Procedure{OnBarrier}{$T$}\Comment{barrier passes snapshot point $T$}
+  \State finish inputs $\le T$; defer inputs $> T$; \textsc{Checkpoint}($T$)\Comment{uncoordinated consistent cut}
 \EndProcedure
 \Procedure{Recover}{}
   \State \textsc{Load}(latest snapshot)\Comment{restores state \emph{and} $\mathit{hwm}$}
-  \State import a survivor's state for any prefix still missing, up to the live cut
-  \State \textbf{for} each $(\mathit{ts}, \mathit{op})$ in $\mathit{log}$ suffix in \texttt{ts} order: \textsc{OnDeliver}($(\mathit{ts},\mathit{op})$, \textit{live}$=\textsc{false}$)
-  \State resume live delivery (\textit{live}$=\textsc{true}$) past the recovered cut
+  \State fetch any missing prefix from a survivor, up to the live cut
+  \State \textbf{for} each $(\mathit{ts}, \mathit{op})$ in log suffix, in \texttt{ts} order: \textsc{OnDeliver}($(\mathit{ts},\mathit{op})$, \textit{live}$=$\textsc{false})
+  \State resume live delivery past the recovered cut
 \EndProcedure
 \end{algorithmic}
 \end{algorithm}
 
-\section{Implementation}
+\subsection{Durability, membership, and recovery under load}
+\label{sec:membership}
+
+The configuration is $k$ replicas of the log; an input is durable once any
+survivor holds it, giving fail-stop tolerance of $f<k$ simultaneous
+crashes with in-memory copies. Membership rides on the fabric: its failure
+detector excises a dead peer within tens of microseconds and the survivors'
+commit barrier resumes over the reduced group. Because OneBarrier is
+\emph{passive}---one replica executes, the backups only log---a primary
+failure opens a recovery window of unavailability; automated
+primary promotion (a view change in the sense of Viewstamped
+Replication~\citep{oki1988vr,liskov2012vrrevisited}, which fundamentally
+requires consensus~\citep{fischer1985impossibility,lamport1998parttime}) is
+left to a production layer (\S\ref{sec:limits}). A recovering replica
+converges only while replay outruns the live stream; the fabric's
+barrier hold doubles as backpressure on senders, roughly doubling the live
+load a recovery can outrun (Appendix~\ref{app:eval}).
+
+\subsection{Implementation and machine-checked protocols}
 \label{sec:impl}
 
-The OneBarrier engine is $\sim$4.8\,k lines of Rust over the \texttt{ReliableHost} fabric of an
-open 1Pipe reproduction, implementing the key/value state machine, the durable ordered log,
-timestamp-$T$ snapshots, exactly-once output suppression, and crash recovery. The production servers
-(RESP/Redis, Memcached, HTTP, a transactional store, a pub/sub log), the fault injectors, and the
-correctness checkers ship as runnable binaries, and each evaluation result is guarded by a named unit
-test that asserts the property under test. The libOS is three \texttt{LD\_PRELOAD} C libraries
-(\texttt{libobpreload} for sockets/time/capture, \texttt{librngdet} for the seccomp randomness trap,
-\texttt{libdetsched} for deterministic scheduling). We machine-check the core protocols in TLA+:
-1Pipe total order (TLC explored $3.5\times10^6$ states with no order violation) and OneBarrier's
-exactly-once and no-lost-acknowledged-write properties. The TLA+ models verify the \emph{protocol
-abstractions}, not the Rust and C implementations, which are validated separately by the
-crash-injection and linearizability checks of \S\ref{sec:eval-correct}. Every result is reproduced by
-a single command (Appendix~\ref{app:repro}).
+The engine is $\sim$4.8\,k lines of Rust over the reliable-delivery layer
+of an open 1Pipe reproduction, implementing the ordered durable log,
+timestamp-$T$ snapshots, output suppression, and crash recovery; the test
+servers (a Redis-protocol store, Memcached, HTTP, a transactional store, a
+publish/subscribe log), fault injectors, and correctness checkers ship as
+runnable binaries, and each quantitative claim is guarded by a named test.
+The determinism shim is the three C libraries of \S\ref{sec:libos}. We
+specify the two correctness-critical protocols in TLA+ and model-check
+them: the fabric's total-order delivery (no ordering violation in
+$3.5\times10^{6}$ reachable states) and the engine's recovery (exactly-once
+and no-lost-acknowledged-write under arbitrary crash/recover
+interleavings). The TLA+ models verify the protocol abstractions; the Rust
+and C implementations are validated separately by the crash-injection and
+linearizability checks of \S\ref{sec:eval-correct}. Every result in
+\S\ref{sec:eval} reproduces with a single command
+(Appendix~\ref{app:repro}).
 
 \section{Evaluation}
 \label{sec:eval}
 
-We lead with what is measured on real, unmodified binaries (recovery fidelity, correctness under fault,
-recovery time, steady-state cost), then quantify the barrier coincidence \S\ref{sec:overview} establishes
-by construction and the resource cost against prior systems.
+Four questions, one per subsection:
+\textbf{Q1}~Can condition L really be closed for unmodified binaries
+(\S\ref{sec:eval-recovery})?
+\textbf{Q2}~Is the recovered service \emph{correct}, not merely identical
+(\S\ref{sec:eval-correct})?
+\textbf{Q3}~Does the durable write ride the commit barrier or stack on top
+of it---the load-bearing claim of \S\ref{sec:props}
+(\S\ref{sec:eval-overlap})?
+\textbf{Q4}~What does it all cost (\S\ref{sec:eval-cost})?
 
-\subsection{Byte-identical recovery of five unmodified servers}
+\emph{Evidence tiers, stated once.} Q1, Q2, and Q4 are measured on real,
+unmodified binaries or on the real engine. For Q3, the ride-versus-stack
+\emph{structure} is measured on the real engine over a loopback network;
+its \emph{magnitude at the microsecond operating point} comes from a
+discrete-event model calibrated against that engine, because we lack an
+RDMA/programmable-switch testbed. We flag the modeled numbers where they
+appear and nowhere claim them as measurements.
+
+\subsection{Q1: Byte-identical recovery of fifteen unmodified applications}
 \label{sec:eval-recovery}
-The test of ``transparent'' is binary: kill an unmodified server, wait a real wall-clock gap,
-recover it, and demand the bytes match. Four servers take the deterministic-replay path (record under
-the virtual clock and randomness stack, \texttt{kill -9}, wait, replay on a fresh instance), while
-PostgreSQL, shared-everything and so not a replay candidate, takes the general CRIU path. Each passes
-on the strongest reading: not merely a time-derived header but full \emph{state} reconstructs
-identically (Figure~\ref{fig:recovery}), covering Redis TTL expiries, Node.js session IDs keyed by
-\texttt{Math.random()}/\texttt{Date.now()}, Memcached's LRU eviction order, and PostgreSQL's
-multi-process on-disk tree, while a no-libOS control diverges: determinism here is something the
-libOS manufactures.
+
+The test of transparency is blunt: kill an unmodified server with
+\texttt{kill -9}, wait a real wall-clock gap, recover it, and demand that
+its state match the original byte for byte. Four servers take the replay
+path (record under the shim; crash; replay on a fresh instance):
+\textbf{Redis} (TTL expirations and hash-seed-dependent command orders),
+\textbf{Memcached} (LRU eviction order), \textbf{Nginx} (the
+\texttt{Date} header from its internal time cache), and \textbf{Node.js}
+(session identifiers derived from \texttt{Math.random()} and
+\texttt{Date.now()}). \textbf{PostgreSQL}, shared-everything, takes the
+CRIU path: the multi-process tree checkpoint-restores with byte-identical
+on-disk data and a live server. In every case a control run without the
+shim diverges---the determinism is manufactured, not incidental
+(Figure~\ref{fig:recovery}). Robustness is not a lucky draw: across 25
+independent record/crash/replay trials of Redis and 8 of Node.js, recovery
+was byte-identical in every trial and the control differed in every trial
+(Appendix~\ref{app:eval}).
 
 \begin{figure}[tb]
 \centering
@@ -440,184 +764,32 @@ libOS manufactures.
 \caption{CRIU checkpoint cost.}
 \label{fig:criu}
 \end{subfigure}
-\caption{(a) Time, randomness, and full-state recovery for the five unmodified servers: recovered
-state equals live, and a no-libOS control differs. (b) CRIU checkpoint time vs.\ image size; a
-multi-process PostgreSQL checkpoint/restores with byte-identical data and a live server.}
+\caption{(a) Time, randomness, and full-state recovery for the five core
+servers: recovered state equals live state, and a no-shim control differs.
+(b) Whole-process checkpoint time versus image size; a multi-process
+PostgreSQL checkpoint-restores with byte-identical data.}
 \label{fig:recovery}
 \end{figure}
 
-\subsection{Correctness under fault}
-\label{sec:eval-correct}
-Byte-identity shows the recovered state equals the recorded one; it does not show that state was ever
-\emph{consistent}. Two complementary checks close that gap on a recovered unmodified Redis crashed
-mid-load under eight concurrent clients. Mass survival: every acknowledged write reappears after
-recovery with its exact value, $191{,}073$ acked, $0$ lost, $0$ torn, with in-flight operations
-excluded as the honest output-commit gap. And a genuine verdict: a from-scratch Wing--Gong
-linearizability~\cite{herlihy1990linearizability} checker searches the real-time-overlapping history
-of a contended register, including the post-recovery read, and certifies it linearizable. We keep the
-two distinct: survival scales to many operations, while the verdict is a search exponential in
-concurrency, decidable only on a small history (Appendix~\ref{app:eval}).
-
-\subsection{Recovery time and steady-state cost}
-\label{sec:eval-time}\label{sec:eval-overhead}
-Two costs decide deployability: recovery time and steady-state overhead. Recovery is affine in the
-replayed log length above a fixed restore floor (Figure~\ref{fig:rectime}), and a checkpoint caps the
-replayed suffix to the post-checkpoint tail, so downtime is a tunable parameter held well under the
-seconds-to-minutes of detect-and-restart cluster failover. In steady state the virtualization a server
-exercises is cheap, a few percent or less (Figure~\ref{fig:overhead}), because each interceptor is a thin
-shim over a syscall the server already makes. The one costly mechanism is deterministic scheduling, whose
-serialization is fundamental, which is why the production path is share-nothing sharding
-(\S\ref{sec:threads}).
-
-\begin{figure}[tb]
-\centering
-\begin{subfigure}{0.43\linewidth}\centering
-\includegraphics[width=\linewidth]{figures/fig_recovery_time.pdf}
-\caption{Recovery time is affine in log length, exact reconstruction.}
-\label{fig:rectime}
-\end{subfigure}\hfill
-\begin{subfigure}{0.43\linewidth}\centering
-\includegraphics[width=\linewidth]{figures/fig_overhead.pdf}
-\caption{Steady-state libOS overhead.}
-\label{fig:overhead}
-\end{subfigure}
-\caption{(a) Recovery time: a $\sim$30\,ms restore floor plus $\sim$0.5\,ms per 1000 requests
-($\sim$95\,MB/s); a checkpoint every $100$k requests bounds the replayed tail to sub-$100$\,ms
-downtime, versus seconds-to-minutes for cluster failover. (b) Steady-state overhead on Nginx
-(ApacheBench): time virtualization $\sim$2\%, randomness within noise, FT request capture $<\!5\%$
-(and, in the real design, the fabric's 1-RTT replica write, not a local log).}
-\label{fig:costs}
-\end{figure}
-
-\subsection{The barrier coincidence, measured}
-\label{sec:eval-overlap}
-\S\ref{sec:overview} argues that output commit and reliable delivery are the \emph{same} barrier. The
-question an experiment can settle is binary: does the durable write \emph{ride} the barrier the fabric
-already crosses, or \emph{stack} on top of it? We isolate the marginal durability cost of FT under two
-tiers (Table~\ref{tab:rq2}): in-fabric replication, which should ride, and serial fsync-to-storage,
-which cannot.
-
-\begin{table}[tb]\centering\small
-\begin{tabular}{lrrr}
-\toprule
-tier & delivery p50 & marginal durable p50 & commit p50 \\
-\midrule
-in-fabric (rides barrier) & $2014\,\mu s$ & $\boldsymbol{4.59\,\mu s}$ & $2018\,\mu s$ \\
-fsync (serial storage)    & $3042\,\mu s$ & $\boldsymbol{2963\,\mu s}$ & $6016\,\mu s$ \\
-\bottomrule
-\end{tabular}
-\caption{With in-fabric durability the marginal FT cost is $0.23\%$ of the delivery latency: the
-output-commit write completes inside the reliable-delivery barrier. Serial fsync stacks $\sim$3\,ms on
-the critical path (commit doubles) and collapses throughput. The contrast, not the absolute $\mu s$, is
-the result.}
-\label{tab:rq2}
-\end{table}
-
-In-fabric replication rides: the durable write completes inside the commit barrier and its marginal cost
-is a rounding error on delivery latency (Figure~\ref{fig:overlap}). Serial fsync stacks: it roughly doubles
-commit latency and saturates the executor, reproducing the output-hold failure mode that sank Remus. The
-loopback baseline is itself millisecond-scale, so what it establishes is the \emph{structure}, ride versus
-stack. That this carries to the microsecond operating point follows by construction (\S\ref{sec:overview})
-and is corroborated two ways: a discrete-event model at 1Pipe's parameters, whose FT-overlap tail is
-indistinguishable from the reliable-fabric baseline at every load (Figure~\ref{fig:loadsweep}), and real
-RDMA verbs whose one-sided-write latency sits in the assumed band (Appendix~\ref{app:model}). Only a hardware
-RDMA/P4 testbed would put a direct number on the avoided cost; the coincidence does not depend on one.
-
-\begin{figure}[tb]
-\centering
-\includegraphics[width=0.56\linewidth]{figures/fig_overlap.pdf}
-\caption{Overlap vs.\ stack. When durability rides the commit barrier (top bar of each panel) the
-durable-replica write (green) finishes \emph{under} a barrier the fabric already crosses, adding nothing.
-When it is serial (bottom bar) it stacks on top (red). Left: the loopback reproduction ($0.23\%$ added,
-serial fsync doubling commit latency and saturating the executor). Right: the same structure at 1Pipe's
-RDMA operating point, where a $\sim$1.5\,\textmu s replica write completes inside the $\sim$21\,\textmu s
-barrier while out-of-regime serial durability ($\sim$100\,\textmu s) stacks.}
-\label{fig:overlap}
-\end{figure}
-
-\begin{figure}[tb]
-\centering
-\includegraphics[width=0.82\linewidth]{figures/fig_loadsweep.pdf}
-\caption{Load sweep at the RDMA operating point (discrete-event model, \texttt{ob-sim}). (a) p99.9 commit
-latency vs.\ offered throughput: the FT-overlap tier (durability rides the commit barrier) is
-\emph{coincident} with the reliable-1Pipe baseline across the entire load range and into the p99.9 tail, so
-FT is marginal-cost-$\approx$0 at \emph{every} load up to the apply-bound knee. (b) The serial-durability
-tier never enters the microsecond regime: its ceiling is set by the $\sim$100\,\textmu s out-of-regime
-serial storage write (Table~\ref{tab:model}), a $200\times$ collapse below the apply-bound ceiling, the
-output-hold failure mode that sank Remus quantified across load. (At the loopback operating point the
-same tier is bound by the measured $\sim$3\,ms fsync, a $\sim$$6000\times$ collapse; Appendix~\ref{app:model}.)}
-\label{fig:loadsweep}
-\end{figure}
-
-\subsection{Resource cost against prior transparent systems}
-\label{sec:eval-compete}
-The fabric removes two mechanisms prior transparent systems pay for, and the savings show up head-to-head.
-The baselines are our reimplementations of those mechanisms inside the same engine, HyCoR's per-input
-order-log and LLFT's host-side sequencer, not the released systems, so the comparison isolates the cost of
-the mechanism itself with everything else held equal. Against the order-log (HyCoR-style), OneBarrier
-persists strictly fewer durable bytes and runs $1.5$--$2.2\times$ faster (Figure~\ref{fig:competitors}).
-Against the host sequencer (LLFT-style; masked here by apply work, exposed under producer contention),
-in-network ordering scales where a central sequencer does not. And because OneBarrier is \emph{passive}, log-only backups never execute the state machine, so
-aggregate execution CPU stays near a single replica's as the replication factor grows (a $49$--$83\%$
-saving), where active SMR climbs linearly (Figure~\ref{fig:resource}). Transparency need not be costly.
-
-\begin{figure}[tb]
-\centering
-\includegraphics[width=0.52\linewidth]{figures/fig_competitors.pdf}
-\caption{Head-to-head throughput against same-engine reimplementations of the mechanisms OneBarrier
-avoids (not the released systems): it beats the HyCoR-style order-log by $1.5$--$2.2\times$ (writing no
-order-log, where a deterministic test confirms the order-log tier persists strictly more durable bytes).
-The LLFT-style host sequencer is masked by apply work here and isolated in the sequencer-vs-fabric
-scaling result (1Pipe measures the in-network advantage at $2$--$20\times$ on hardware).}
-\label{fig:competitors}
-\end{figure}
-
-\begin{figure}[tb]
-\centering
-\begin{subfigure}{0.43\linewidth}\centering
-\includegraphics[width=\linewidth]{figures/fig_passive.pdf}
-\caption{Passive vs.\ active SMR: execution CPU.}
-\label{fig:passive}
-\end{subfigure}\hfill
-\begin{subfigure}{0.43\linewidth}\centering
-\includegraphics[width=\linewidth]{figures/fig_interval.pdf}
-\caption{Snapshot-interval tradeoff.}
-\label{fig:interval}
-\end{subfigure}
-\caption{Resource cost. (a) OneBarrier's passive design holds execution CPU near $1\times$
-($106$--$123$\,ms) as replicas grow, where active SMR scales linearly ($206$--$730$\,ms): a $49$--$83\%$
-saving, since log-only backups never execute the state machine. (b) A small snapshot interval triples
-steady apply cost but recovers in $\sim$20\,\textmu s, while a large interval is the reverse ($283\times$
-slower recovery).}
-\label{fig:resource}
-\end{figure}
-
-\section{Generality: Beyond the Five Servers}
-\label{sec:ext}
-Is the mechanism only ``request/response store with in-memory state''? The design itself says where it
-generalizes, through a fit-test that is its preconditions read forward: an unmodified server extends
-transparently if it is deterministic given input order, share-nothing or cleanly shardable, socket-based,
-and bounded in output. The test routes each application to order-log-free deterministic replay (for
-share-nothing socket servers) or general CRIU checkpointing (for any shared-everything binary,
-Figure~\ref{fig:taxonomy}), and ten further applications across five classes (message brokers, databases, a
-network function, a stateful microservice, and infrastructure daemons) recover exactly-once and
-byte-identically along the path it assigns (Figure~\ref{fig:extresults}; per-class detail in
-Appendix~\ref{app:ext}). Two meet the rewrite paths on home ground: a stock Redis stream broker recovers
-entry IDs and consumer offsets byte-identically, contesting exactly-once stream processing, and an
-unmodified SQLite-backed process recovers by \emph{deterministic replay}, showing the database boundary is
-shared-everything concurrency, not ``databases.'' And one discovery: the determinism unit is the message,
-not the connection, so it was \emph{UDP} servers like dnsmasq, not TCP ones, that needed a fix, the
-opposite of the usual assumption.
-
-\begin{figure}[tb]
-\centering
-\includegraphics[width=0.56\linewidth]{figures/fig_taxonomy.pdf}
-\caption{The fit-test routes each unmodified server to one of two paths: order-log-free \emph{deterministic
-replay}, the novel path ($\approx$0 over the fabric) for share-nothing socket servers, or the general
-\emph{CRIU checkpoint} path for any shared-everything binary. The five servers of \S\ref{sec:eval-recovery}
-and the ten extensions populate both.}
-\label{fig:taxonomy}
-\end{figure}
+\paragraph{Ten further applications.} To test whether the fit test of
+\S\ref{sec:fittest} predicts anything beyond the servers it was designed
+on, we routed ten further stock applications through it, spanning five
+classes: message brokers (Redis Streams, a Kafka-style partitioned log,
+Mosquitto MQTT), databases (SQLite under an unmodified Python process;
+MySQL/MariaDB via CRIU), a stateful network function (a Click-style flow
+table and load balancer~\citep{li2016clicknp,sherry2015ftmb}), a stateful
+order/checkout microservice, and infrastructure daemons (dnsmasq,
+lighttpd, HAProxy). Each recovers byte-identically along the path the fit
+test assigns (Figure~\ref{fig:extresults}; per-class detail in
+Appendix~\ref{app:ext}). Three results sharpen the boundary. A stock Redis
+stream broker recovers its auto-generated entry IDs and consumer offsets
+exactly---the guarantee exactly-once stream processors are rewritten to
+provide. An unmodified SQLite-backed process recovers by deterministic
+\emph{replay}, placing a SQL database on the free path and locating the
+real boundary at shared-everything concurrency, not at ``databases.'' And
+the determinism unit proved to be the \emph{message}, not the connection:
+it was UDP servers (dnsmasq), not TCP ones, that needed a small extension,
+the opposite of the usual assumption.
 
 \begin{figure}[tb]
 \centering
@@ -628,234 +800,459 @@ and the ten extensions populate both.}
 \end{subfigure}\hfill
 \begin{subfigure}{0.53\linewidth}\centering
 \includegraphics[width=\linewidth]{figures/fig_ext_determinism.pdf}
-\caption{Recovered replay $=$ live, control drifts.}
+\caption{Recovered replay $=$ live; control drifts.}
 \label{fig:extdet}
 \end{subfigure}
-\caption{The ten extension applications across five classes (brokers, databases, a network function, a
-microservice, infrastructure servers). (a) Each recovers byte-identically with the expected
-control-differs witness (a dash marks the CRIU path, which has no replay-vs-control axis). (b) The
-recovered replay reproduces each app's time/value-derived probe \emph{exactly}, while a no-libOS control
-drifts by the labeled amount.}
+\caption{The ten extension applications across five classes. (a) Each
+recovers byte-identically with the expected control-differs witness (a
+dash marks the checkpoint path, which has no replay-versus-control axis).
+(b) Each application's time- or randomness-derived probe is reproduced
+exactly by recovery, while a no-shim control drifts by the labeled
+amount.}
 \label{fig:extresults}
 \end{figure}
 
-\section{What Is New: An Honest Reckoning}
-\label{sec:novelty}
+\subsection{Q2: Correctness under crash injection}
+\label{sec:eval-correct}
 
-An adversarial prior-art review finds the conceptual thesis substantially anticipated, and we state it
-plainly (Table~\ref{tab:prior}, Figure~\ref{fig:positioning}). The blunt objections write themselves: it is
-passive SMR, the vanishing order-log is Schneider's decades-old property~\cite{schneider1990smr},
-LLFT~\cite{zhao2013llft} already did transparent no-order-log FT (we merely swap an in-network fabric for
-its order source), and the fabric is a network, not stable storage.
+Byte-identity shows the recovered state equals the recorded one; it does
+not show that state was ever consistent. Two checks close the gap, both on
+an unmodified Redis crashed mid-load under eight concurrent clients.
+\emph{Survival at scale}: every acknowledged write reappears after
+recovery with its exact value---$191{,}073$ acknowledged, $0$ lost, $0$
+torn---with operations still in flight at the crash excluded, as output
+commit prescribes. \emph{A genuine linearizability verdict}: a from-scratch
+Wing--Gong checker~\citep{herlihy1990linearizability} searches the
+real-time-overlapping history of a contended register, including the
+post-recovery read, and certifies it linearizable. The two are
+complementary: survival scales to hundreds of thousands of operations; the
+linearizability search is exponential in concurrency and is rendered on a
+small history (Appendix~\ref{app:eval}).
+
+\subsection{Q3: Does durability ride the barrier, or stack on it?}
+\label{sec:eval-overlap}
+
+Section~\ref{sec:props} claims that under conditions R and D the durable
+write adds no round trip because it completes inside a barrier the network
+crosses anyway. The falsifiable form of the claim is comparative: put the
+durable write \emph{inside} the barrier (condition D holds) and its
+marginal cost should be microseconds of copying, not a round trip; put it
+\emph{after} the barrier (condition D broken, as with a synchronous disk
+write) and the classical output-commit cost should reappear in full. We
+run both on the real engine over a loopback network
+(Table~\ref{tab:rq2}).
 
 \begin{table}[tb]\centering\small
-\begin{tabular}{>{\raggedright\arraybackslash}p{0.185\linewidth}>{\raggedright\arraybackslash}p{0.33\linewidth}>{\raggedright\arraybackslash}p{0.38\linewidth}}
+\begin{tabular}{lrrr}
 \toprule
-prior & what it already did & gap OneBarrier owns \\
+durability placement & delivery p50 & marginal durability cost & commit p50 \\
 \midrule
-LLFT & transparent FT of unmodified socket apps, no order-log, via totally-ordered virtual time & order
-source is host software, not in-network. We offload it to the switch and show the cost regime change \\
-HyCoR & checkpoint-replay of unmodified containers & still logs non-determinism over a normal network. We
-remove the order-log via the fabric \\
-NOPaxos, Eris, Derecho & network-offloaded order for consensus/SMR & active SMR ($N$ execute). We are
-passive (1 live + log + snapshot) \\
-Remus, VMware FT & transparent VM-FT, output buffered until sync & the output-hold latency we remove via
-the barrier coincidence \\
+inside the barrier (D holds) & $2014\,\mu s$ & $\boldsymbol{+4.59\,\mu s}$ & $2018\,\mu s$ \\
+after the barrier (fsync)    & $3042\,\mu s$ & $\boldsymbol{+2963\,\mu s}$ & $6016\,\mu s$ \\
 \bottomrule
 \end{tabular}
-\caption{Prior art that anticipates parts of the thesis, and the gap OneBarrier owns.}
-\label{tab:prior}
+\caption{Ride versus stack, measured on the real engine (loopback network,
+p50). With replication inside the barrier, fault tolerance adds
+$4.6\,\mu s$ of copying to the commit path. With a serial write after the
+barrier, it adds $2963\,\mu s$---the commit latency doubles and the
+executor saturates. The \emph{contrast} is the result; the loopback
+baseline is itself millisecond-scale, so the small percentage it implies
+is not the honest headline.}
+\label{tab:rq2}
 \end{table}
+
+The structure is unambiguous: in-barrier durability costs $4.6\,\mu s$ of
+copying; post-barrier durability costs three milliseconds, doubles commit
+latency, and reproduces the failure mode that sank Remus
+(Figure~\ref{fig:overlap}). We are explicit about what the loopback
+baseline can and cannot say. Because its delivery path is itself
+millisecond-scale, dividing $4.6\,\mu s$ by it yields a flattering
+fraction ($0.2\%$) that we do not lean on; what the experiment establishes
+is the \emph{structure}---ride versus stack. The magnitude at the
+microsecond operating point comes from a discrete-event model of the
+1Pipe pipeline at its published parameters ($1$--$2\,\mu s$ round trip,
+$\sim$$21\,\mu s$ reliable-delivery barrier, $\sim$$1.5\,\mu s$
+replication write; Appendix~\ref{app:model}): there, if the write
+\emph{stacked}, it would add $\sim$$1.5\,\mu s$ to a $21\,\mu s$ path
+($7\%$) in the best case and $\sim$$100\,\mu s$ ($5\times$) with serial
+storage---so the operating point is exactly where riding versus stacking
+changes the verdict on deployability. In the model, the fault-tolerant
+tier's commit-latency distribution is indistinguishable from the
+no-fault-tolerance baseline at every offered load, into the p99.9 tail
+(Figure~\ref{fig:loadsweep}), while the serial tier's throughput ceiling
+sits two orders of magnitude below. The model is calibrated: fed the
+engine's measured loopback latencies, it reproduces the in-barrier commit
+latency to $\sim$$0.1\%$ and predicts the serial tier's saturation knee at
+$\approx$$340$\,ops/s, which the real engine reproduces between $300$ and
+$370$\,ops/s. Real RDMA transfers over a software RoCE stack corroborate
+the one-sided-write latency the model assumes ($\sim$$1.5\,\mu s$), though
+not the full round-trip pipeline, which only switch hardware would settle
+(Appendix~\ref{app:model}).
 
 \begin{figure}[tb]
 \centering
-\includegraphics[width=0.6\linewidth]{figures/fig_positioning.pdf}
-\caption{Where OneBarrier sits. Prior transparent systems (LLFT, HyCoR, Remus/VMware-FT) lived at the
-millisecond, software-ordered operating point; the rewrite path (Temporal, Flink) abandons transparency;
-network-ordered SMR (NOPaxos, Eris) is active and not transparent. OneBarrier occupies the transparent,
-microsecond, in-network-order corner, where the cost regime collapses.}
-\label{fig:positioning}
+\includegraphics[width=0.56\linewidth]{figures/fig_overlap.pdf}
+\caption{Ride versus stack. Top bars: the durable write (green) completes
+under the commit barrier the network crosses regardless, adding
+microseconds of copying. Bottom bars: placed after the barrier, the same
+write stacks (red). Left: measured on the real engine over loopback
+($+4.6\,\mu s$ versus $+2963\,\mu s$). Right: the same structure at the
+modeled RDMA operating point, where a $\sim$$1.5\,\mu s$ replication write
+hides inside a $\sim$$21\,\mu s$ barrier while serial storage
+($\sim$$100\,\mu s$) stacks.}
+\label{fig:overlap}
 \end{figure}
 
-What survives is not a new primitive but a realization-and-measurement: OneBarrier is the first system to
-show that a single in-network total-order reliable fabric makes transparent passive FT cost $\approx$ the
-total-order baseline (by replicating the recovery log within the fabric's commit barrier), and to
-demonstrate the enabling determinism libOS on five real servers including a multi-process database. The
-durability objection is answered by the in-fabric replica, durable once the delivering barrier passes; the
-``just LLFT'' objection by the operating point, where the cost \emph{structure}, not its magnitude,
-collapses.
+\begin{figure}[tb]
+\centering
+\includegraphics[width=0.82\linewidth]{figures/fig_loadsweep.pdf}
+\caption{Load sweep at the modeled RDMA operating point. (a) p99.9 commit
+latency versus offered load: the fault-tolerant tier (durability inside
+the barrier) is coincident with the no-FT baseline across the entire load
+range. (b) The serial-durability tier's throughput ceiling is set by its
+$\sim$$100\,\mu s$ post-barrier write, $200\times$ below the apply-bound
+ceiling---the classical output-commit collapse, quantified across load.}
+\label{fig:loadsweep}
+\end{figure}
 
-\section{Limitations and Scope}
+\subsection{Q4: Costs}
+\label{sec:eval-cost}
+
+\paragraph{Steady-state overhead.} The virtualization a server actually
+exercises is cheap because each interceptor is a thin wrapper over a call
+the server already makes: on Nginx under ApacheBench, time virtualization
+costs $\sim$$2\%$, randomness virtualization is within noise, and input
+capture costs $<$$5\%$ (Figure~\ref{fig:costs}b). The one costly mechanism
+is deterministic scheduling, whose serialization is fundamental
+(\S\ref{sec:threads})---which is why the production path is sharding.
+
+\paragraph{Recovery time.} Recovery is affine in the replayed log length
+above a $\sim$$30$\,ms restore floor---about $0.5$\,ms per thousand
+requests (Figure~\ref{fig:costs}a)---and a checkpoint caps the replayed
+suffix, so downtime is a tunable parameter: a checkpoint every $10^5$
+requests holds recovery under $100$\,ms, versus the seconds-to-minutes of
+detect-and-restart failover. The snapshot interval trades steady-state
+apply cost against recovery time in the expected way
+(Figure~\ref{fig:resource}b).
+
+\begin{figure}[tb]
+\centering
+\begin{subfigure}{0.43\linewidth}\centering
+\includegraphics[width=\linewidth]{figures/fig_recovery_time.pdf}
+\caption{Recovery time vs.\ log length.}
+\label{fig:rectime}
+\end{subfigure}\hfill
+\begin{subfigure}{0.43\linewidth}\centering
+\includegraphics[width=\linewidth]{figures/fig_overhead.pdf}
+\caption{Steady-state shim overhead (Nginx).}
+\label{fig:overhead}
+\end{subfigure}
+\caption{Costs on real binaries. (a) Recovery time is affine in the
+replayed log ($\sim$$30$\,ms floor $+$ $\sim$$0.5$\,ms per 1000 requests);
+checkpoints bound it. (b) Steady-state overhead on Nginx: time
+$\sim$$2\%$, randomness within noise, capture $<$$5\%$.}
+\label{fig:costs}
+\end{figure}
+
+\paragraph{Against the mechanisms the conditions eliminate.} To isolate
+what conditions O and D save, we reimplemented the two mechanisms they
+replace \emph{inside the same engine}---a HyCoR-style per-input order log
+and an LLFT-style host-software sequencer---so everything else is held
+equal (these are mechanism baselines, not the released systems). Removing
+the order log yields $1.5$--$2.2\times$ higher throughput and strictly
+fewer durable bytes (Figure~\ref{fig:competitors}); the host sequencer is
+masked by apply work at low producer counts and becomes the bottleneck
+under contention, where an in-network sequencer scales with the network
+(1Pipe reports $2$--$20\times$ on hardware~\citep{li2021onepipe}). And
+because OneBarrier is passive, backups only log: aggregate execution CPU
+stays near a single replica's as the replication factor grows, a
+$49$--$83\%$ saving over active replication in which every replica
+executes (Figure~\ref{fig:resource}a).
+
+\begin{figure}[tb]
+\centering
+\includegraphics[width=0.52\linewidth]{figures/fig_competitors.pdf}
+\caption{Throughput against same-engine reimplementations of the
+mechanisms the conditions eliminate: the per-input order log (condition O
+removes it) and the host-software sequencer (in-network ordering removes
+it). OneBarrier beats the order-log tier by $1.5$--$2.2\times$.}
+\label{fig:competitors}
+\end{figure}
+
+\begin{figure}[tb]
+\centering
+\begin{subfigure}{0.43\linewidth}\centering
+\includegraphics[width=\linewidth]{figures/fig_passive.pdf}
+\caption{Passive vs.\ active replication: execution CPU.}
+\label{fig:passive}
+\end{subfigure}\hfill
+\begin{subfigure}{0.43\linewidth}\centering
+\includegraphics[width=\linewidth]{figures/fig_interval.pdf}
+\caption{Snapshot-interval tradeoff.}
+\label{fig:interval}
+\end{subfigure}
+\caption{Resource cost. (a) Passive replication holds execution CPU near
+$1\times$ ($106$--$123$\,ms) as replicas grow, where active replication
+scales linearly ($206$--$730$\,ms): a $49$--$83\%$ saving. (b) A small
+snapshot interval triples steady apply cost but recovers in
+$\sim$$20\,\mu s$; a large interval is the reverse ($283\times$ slower
+recovery).}
+\label{fig:resource}
+\end{figure}
+
+\section{Limitations}
 \label{sec:limits}
 
-\textbf{No RDMA/P4 hardware.} The fabric's RDMA \emph{latency} is reproduced in a model
-(Appendix~\ref{app:model}) and corroborated by CPU-bound SoftRoCE verbs, so the overlap is established by
-the model rather than measured on hardware, the only major claim not measured on real artifacts.
-\textbf{Durability model.} Durability is in-memory $f$-of-$k$ fail-stop tolerance via in-fabric
-replication, not crash-consistent persistence across correlated power loss (the FaRM/RAMCloud
-tradeoff~\cite{dragojevic2014farm}). \textbf{No automated failover.} We validate the recovery
-\emph{mechanism} and inherit membership from the fabric's failure detector, but leave the
-primary-promotion / view-change protocol (e.g.\ Viewstamped Replication~\cite{oki1988vr,liskov2012vrrevisited})
-to a production layer; because the design is passive, a primary failure incurs a recovery window of
-unavailability, the price of holding execution CPU near a single replica's.
-\textbf{Shared-everything determinism.} Order-log-free replay is for share-nothing servers; arbitrary
-shared-everything multithreading falls back to the checkpoint-only CRIU path (\S\ref{sec:criu}).
-\textbf{Residual non-determinism.} Two userspace instructions take no syscall and export no symbol:
-\texttt{RDRAND} (pinned per-consumer here) and \texttt{RDTSC} (used by none of our five servers). A fully
-general guarantee would trap both via \texttt{prctl} and instruction-trap paths (Appendix~\ref{app:libos}).
-\textbf{Cooperating peers and clients.} The deepest boundary is an impossibility, not a cost: transparent
-FT cannot un-send an external side effect already delivered to a peer that will not cooperate. Output
-commit \emph{bounds} the inconsistency window but does not eliminate it, so the clean wins are
-fabric-internal, idempotent, and self-contained leaf services; a non-cooperating peer is served correctly
-only by buffering output at the ingress until durable, re-importing the latency the design removes.
+\textbf{No switch/RDMA testbed.} The ride-versus-stack structure is
+measured on the real engine; its magnitude at the microsecond operating
+point rests on a calibrated model and published 1Pipe measurements
+(\S\ref{sec:eval-overlap}, Appendix~\ref{app:model}). This is the one
+major claim not measured on real artifacts.
+\textbf{Durability model.} Durability is in-memory replication tolerating
+$f<k$ fail-stop crashes, not persistence across correlated power
+loss---the FaRM/RAMCloud trade~\citep{dragojevic2014farm}.
+\textbf{No automated failover.} We validate the recovery mechanism and
+inherit failure detection from the fabric, but leave primary promotion
+(view change~\citep{oki1988vr,liskov2012vrrevisited}) to a production
+layer; a primary failure therefore opens a bounded window of
+unavailability, the price of passive replication's CPU savings.
+\textbf{Shared-everything binaries.} Order-log-free replay covers
+share-nothing servers; arbitrary shared-memory multithreading falls back
+to the checkpoint-only path (\S\ref{sec:criu}).
+\textbf{Residual non-determinism.} Two CPU instructions take no system
+call and export no symbol: \texttt{RDRAND} (pinned per-consumer here) and
+\texttt{RDTSC} (unused for externally visible state by our fifteen
+applications). A fully general guarantee would trap both
+(Appendix~\ref{app:libos}).
+\textbf{The boundary of transparency.} The deepest limit is an
+impossibility, not an engineering gap: no transparent system can un-send
+an effect already delivered to an external party that will not cooperate
+in deduplication---in essence the two-generals
+obstacle~\citep{gray1978notes}. Output commit bounds the inconsistency
+window; it cannot close it. The clean wins are therefore fabric-internal
+services, idempotent interfaces, and self-contained leaf services; a
+non-cooperating external peer forces output buffering at the boundary,
+re-importing exactly the latency the conditions remove.
 
 \section{Related Work}
 \label{sec:related}
 
-\paragraph{Transparent fault tolerance.} Whole-machine replication makes unmodified workloads
-fault-tolerant, from hypervisor FT~\cite{bressoud1995hypervisor} through Remus~\cite{cully2008remus}
-(checkpoint-and-buffer), VMware FT~\cite{scales2010vmwareft} (lock-step), COLO~\cite{dong2013colo}, and
-Crane~\cite{cui2015crane}. Closest to us, LLFT~\cite{zhao2013llft} replays unmodified socket apps with no
-order-log via totally-ordered virtual time, and HyCoR~\cite{zhou2021hycor} (successor
-RRC~\cite{zhou2022rrc}) gives checkpoint-plus-replay FT for unmodified containers while still logging
-non-determinism over a normal network; OneBarrier relocates both order and durability into an in-network
-fabric.
+\paragraph{Transparent fault tolerance.} Whole-machine replication runs
+unmodified workloads fault-tolerantly, from hypervisor-based
+replication~\citep{bressoud1995hypervisor} through Remus~\citep{cully2008remus},
+VMware FT~\citep{scales2010vmwareft}, COLO~\citep{dong2013colo}, and
+Crane~\citep{cui2015crane}. Closest to this paper are
+LLFT~\citep{zhao2013llft}, which replays unmodified socket applications
+without an order log by imposing a leader-determined total order in host
+software---and which releases output without waiting for its backups,
+recovering safety by requiring every peer to be an LLFT group---and
+HyCoR~\citep{zhou2021hycor} (successor RRC~\citep{zhou2022rrc}), which
+checkpoints unmodified containers and replays short windows from a logged
+order. Relative to both, OneBarrier's contribution is the explicit O/R/D/L
+factoring; its consequence---moving order \emph{and} durability into the
+network so that the output hold coincides with a barrier the network
+already crosses; and the breadth of evidence that condition L is closable
+on real binaries.
 
-\paragraph{Deterministic replay and SMR.} ReVirt~\cite{dunlap2002revirt}, rr~\cite{ocallahan2017rr}, and
-Castor~\cite{mashtizadeh2017castor} record non-determinism for replay, the dominant cost being
-shared-memory access order, which OneBarrier instead sources from the fabric. SMR~\cite{schneider1990smr}
-feeds deterministic replicas a totally-ordered input from consensus (Paxos~\cite{lamport1998parttime},
-Raft~\cite{ongaro2014raft}); a recent line offloads ordering to the network for \emph{active} SMR
-(NOPaxos~\cite{li2016nopaxos}, Eris~\cite{li2017eris}, Derecho~\cite{jha2019derecho}) using programmable
-switches~\cite{bosshart2014p4} and logical clocks~\cite{lamport1978time}. 1Pipe~\cite{li2021onepipe} instead
-provides total-order \emph{communication}, which we repurpose as a \emph{passive}-FT substrate.
+\paragraph{Ordering and replication.} Total order via logical time
+originates with \citet{lamport1978time}; atomic broadcast and virtual
+synchrony made it a group-communication
+primitive~\citep{birman1987isis,defago2004total}; the state-machine
+approach~\citep{schneider1990smr} and consensus
+(Paxos~\citep{lamport1998parttime}, Raft~\citep{ongaro2014raft},
+Viewstamped Replication~\citep{oki1988vr}) built replication on it. A
+recent line derives order from the network:
+NOPaxos~\citep{li2016nopaxos} and Eris~\citep{li2017eris} sequence
+messages in a programmable switch~\citep{bosshart2014p4} while leaving
+reliability and durability to host quorums, and
+Derecho~\citep{jha2019derecho} builds ordered, reliable group
+communication over RDMA---all serving rewritten applications with
+replicated execution. 1Pipe~\citep{li2021onepipe} provides
+total-order \emph{communication} rather than replication; OneBarrier
+repurposes it as a substrate for passive, transparent fault tolerance.
+Calvin~\citep{thomson2012calvin} sequences database transactions up front
+for deterministic execution---the database-layer analogue of
+fabric-supplied order, obtained by rewriting.
 
-\paragraph{Durable execution, checkpoint, and DMT.} The industrial path rewrites applications to
-externalize state: durable execution (Temporal~\cite{temporal}, DBOS~\cite{skiadopoulos2021dbos}),
-exactly-once stream processing (Flink~\cite{carbone2015flink}), and deterministic databases
-(Calvin~\cite{thomson2012calvin}) that sequence transactions up front, the database-layer analogue of
-OneBarrier's fabric-supplied order but requiring a rewrite. CRIU~\cite{criu} checkpoints unmodified
-processes (we use it for bounded recovery), as do microVM snapshot
-systems~\cite{agache2020firecracker,ustiugov2021reap} and gVisor~\cite{gvisor}, the closest prior point to
-our libOS+app snapshot. Kendo~\cite{olszewski2009kendo} and dThreads~\cite{liu2011dthreads} make
-multithreading deterministic at the throughput cost that motivates our sharding, and execute-then-verify
-replication~\cite{kapritsos2012eve,guo2014rex} reaches multicore replication only by relaxing strict
-determinism.
+\paragraph{Deterministic replay and record/replay.}
+ReVirt~\citep{dunlap2002revirt}, rr~\citep{ocallahan2017rr}, and
+Castor~\citep{mashtizadeh2017castor} record non-determinism for replay and
+find message/shared-memory order to be the dominant cost---the cost
+condition O removes at the source. Deterministic multithreading
+(Kendo~\citep{olszewski2009kendo}, CoreDet~\citep{bergan2010coredet},
+dThreads~\citep{liu2011dthreads}) and execute-then-verify
+replication~\citep{kapritsos2012eve,guo2014rex} trade throughput for
+thread-order determinism, the trade our sharding path avoids.
 
-\paragraph{Library OS, output commit, and correctness.} SocksDirect~\cite{li2019socksdirect} is the
-lineage of our user-space socket interception, FastWake~\cite{li2023fastwake} the completion-wait mechanism,
-and Arrakis~\cite{peter2014arrakis} and Demikernel~\cite{zhang2021demikernel} give applications fast
-datapaths; the microsecond operating point is set by RDMA systems such as FaRM~\cite{dragojevic2014farm}
-(whose replication-vs-power-loss tradeoff we adopt) and eRPC~\cite{kalia2019erpc}. The problems we inherit
-are old: output commit~\cite{strom1985optimistic}, consistent snapshots~\cite{chandy1985snapshots},
-synchronized-clock external consistency~\cite{corbett2012spanner,geng2018huygens}, and
-linearizability~\cite{herlihy1990linearizability}.
+\paragraph{Checkpointing and the rewrite path.} CRIU~\citep{criu},
+DMTCP~\citep{ansel2009dmtcp}, and BLCR~\citep{hargrove2006blcr} checkpoint
+unmodified processes; microVM snapshots~\citep{agache2020firecracker,
+ustiugov2021reap} and gVisor~\citep{gvisor} are the systems-level
+analogues. Durable execution (Temporal~\citep{temporal},
+DBOS~\citep{skiadopoulos2021dbos}, Restate~\citep{restate}) and exactly-once
+streaming (Flink~\citep{carbone2015flink}) obtain the same guarantees by
+rewriting. RIFL~\citep{lee2015rifl} supplies the exactly-once RPC
+discipline our output suppression adapts.
+
+\paragraph{Operating point and lineage.} The microsecond regime is set by
+RDMA systems such as FaRM~\citep{dragojevic2014farm} (whose
+in-memory-replication durability trade we adopt) and
+eRPC~\citep{kalia2019erpc}; our user-space interposition follows
+SocksDirect~\citep{li2019socksdirect}, with kernel-bypass datapaths in the
+Arrakis/Demikernel lineage~\citep{peter2014arrakis,zhang2021demikernel}.
+The problems themselves are classical: output
+commit~\citep{strom1985optimistic}, consistent
+snapshots~\citep{chandy1985snapshots}, rollback-recovery at
+large~\citep{elnozahy2002survey}, and
+linearizability~\citep{herlihy1990linearizability}. Stateful
+network-function recovery (FTMB~\citep{sherry2015ftmb},
+Pico~\citep{rajagopalan2013pico}) is a per-domain instance of the same
+replay problem.
 
 \section{Conclusion}
+\label{sec:conclusion}
 
-Transparent fault tolerance failed to ship because three coupled costs (order logging, the distributed cut,
-and output commit) were large at the millisecond operating point, not because snapshots are hard. The
-verdict is operating-point-dependent. A determinism libOS makes unmodified Redis, Memcached, Nginx,
-Node.js, and PostgreSQL recoverable at a few-percent overhead, and an in-network total-order reliable
-fabric collapses all three costs into mechanisms it already runs for communication correctness. At the
-microsecond operating point, transparent fault tolerance becomes a byproduct of the communication fabric.
+Transparent fault tolerance did not fail because recovery is hard; it
+failed because every system paid for ordering, snapshot coordination, and
+output holding on networks that provided none of them. Stated as
+conditions, the diagnosis becomes a design: a network that delivers in one
+global order (O), confirms delivery at a commit barrier (R), and
+replicates each message within that barrier (D) eliminates all three costs
+structurally, and a user-space shim closes the remaining local
+non-determinism (L) of unmodified binaries at a few percent overhead. On a
+fabric that meets the conditions at microsecond scale, fifteen stock
+applications---caches, web servers, brokers, databases, a network
+function---recover byte-identically, with linearizable histories and
+exactly-once effects, and the durable write that transparent systems have
+always stacked on the critical path instead rides a barrier the network
+was crossing anyway.
+Fault tolerance, on such a network, is not a tax. It is a property.
 
 \appendix
 
 \section{Machine-Checked Specifications}
 \label{app:tla}
-We specify and model-check the two correctness-critical protocols in TLA+ with the TLC model checker.
-\texttt{OnePipeTotalOrder} models the fabric's ordering and checks \emph{total order} (every receiver
-delivers messages in one global order consistent with the timestamps, with no observed inversion) over
-$3.5\times10^{6}$ reachable states with no violation. \texttt{OneBarrierEngine} models the replay engine
-and checks two invariants under arbitrary crash/recover interleavings: \textsc{ExactlyOnce} (each
-acknowledged client write is applied to the recovered state exactly once, via the per-client
-high-water-mark) and \textsc{NoLostAck} (every acknowledged write is present after recovery). Both
-specifications are in the artifact under \texttt{spec/}.
+We specify the two correctness-critical protocols in TLA+ and check them
+with the TLC model checker. \texttt{OnePipeTotalOrder} models the fabric's
+timestamping, barrier propagation, and delivery gate, and checks
+\emph{total order}: every receiver delivers messages in one global order
+consistent with the timestamps. TLC explores $3.5\times10^{6}$ reachable
+states with no violation. \texttt{OneBarrierEngine} models the replay
+engine---the durable ordered log, snapshots, the per-client high-water
+marks, and crash/recover transitions---and checks two invariants under
+arbitrary crash and recovery interleavings: \textsc{ExactlyOnce} (each
+acknowledged client write is applied to recovered state exactly once) and
+\textsc{NoLostAck} (every acknowledged write is present after recovery).
+Both specifications ship in the artifact under \texttt{spec/}.
 
-\section{Discrete-Event Model and RDMA Corroboration}
+\section{The Discrete-Event Model and Its Calibration}
 \label{app:model}
 
-The barrier coincidence is structural (\S\ref{sec:overview}). Having no RDMA/P4 testbed, we substantiate
-its \emph{magnitude} at the published 1Pipe operating point with a discrete-event simulation of the
-reliable-delivery pipeline; the parameters (Table~\ref{tab:model}), not the simulator, carry the result.
+The ride-versus-stack structure is measured on the real engine
+(\S\ref{sec:eval-overlap}); this appendix documents how its magnitude at
+the microsecond operating point is modeled, calibrated, and corroborated.
+
+\paragraph{Model.} Each request traverses four stages---order assignment,
+the reliable-delivery barrier, the replication scatter (present only under
+fault tolerance), and commit/release---with service times taken from
+1Pipe's published measurements (Table~\ref{tab:model}) and open Poisson
+arrivals swept to saturation. The replication scatter shares the message's
+total-order position, so it falls within the barrier stage; the
+out-of-regime comparison point instead places a serial $100\,\mu s$
+storage write after the barrier.
 
 \begin{table}[h]\centering\small
 \begin{tabular}{lr}
 \toprule
-model parameter (from 1Pipe) & value \\
+model parameter (from 1Pipe~\citep{li2021onepipe}) & value \\
 \midrule
-end-host RTT & $1$--$2\,\mu s$ \\
-order assignment (stage i) & $0.5$\,RTT \\
+end-host round-trip time & $1$--$2\,\mu s$ \\
+order assignment & $0.5$\,RTT \\
 best-effort delivery & $\sim$$10\,\mu s$ \\
-reliable-delivery barrier (stage ii) & $\sim$$21\,\mu s$ ($1.5$\,RTT $+$ barrier wait) \\
-recovery-log scatter, FT only (stage iii) & $\sim$$1.5\,\mu s$ ($1$\,RTT) \\
-serial stable-storage write (out-of-regime) & $\sim$$100\,\mu s$ \\
+reliable-delivery barrier & $\sim$$21\,\mu s$ ($1.5$\,RTT $+$ barrier wait) \\
+replication scatter (FT only) & $\sim$$1.5\,\mu s$ ($1$\,RTT) \\
+serial stable-storage write (out of regime) & $\sim$$100\,\mu s$ \\
 per-host service cap & $80$\,M msg/s \\
-arrivals & open Poisson, $\lambda$ swept to cap \\
 \bottomrule
 \end{tabular}
-\caption{Discrete-event model parameters, taken from 1Pipe's reported latencies. The FT scatter (stage
-iii) rides the same total-order position as the input, so it falls \emph{within} the stage-ii barrier; the
-out-of-regime point instead places a serial storage write \emph{after} the barrier.}
+\caption{Discrete-event model parameters.}
 \label{tab:model}
 \end{table}
 
-Each request traverses four stages (order assignment, the reliable-delivery barrier, the recovery-log
-scatter present only under FT, and commit/release), with service times from Table~\ref{tab:model}. Across
-the sweep, OneBarrier's commit-latency distribution is indistinguishable from the baseline at every
-$\lambda$ because the scatter completes inside the barrier; the serial-durability tier stacks its
-$\sim$100\,\textmu s write on the executor and is throughput-capped two orders of magnitude below the
-apply-bound ceiling (Figure~\ref{fig:loadsweep}b, body). The loopback calibration below uses the
-\emph{measured} $\sim$3\,ms fsync instead of the 100\,\textmu s out-of-regime value, which is why its
-collapse is $\sim$$6000\times$ rather than $200\times$.
+\paragraph{Calibration against the real engine.} Fed the engine's measured
+loopback latencies instead of the RDMA parameters, the model reproduces
+the in-barrier commit latency at matched load to within $\sim$$0.1\%$, and
+predicts that the serial-fsync tier saturates at $\approx$$340$\,ops/s;
+the real engine holds near its latency floor below $\sim$$300$\,ops/s and
+diverges past $\sim$$370$\,ops/s---the predicted knee, reproduced on real
+software. Only the absolute RDMA latencies are substituted when the model
+is run at the microsecond point. (At the loopback point the serial tier is
+bound by the \emph{measured} $\sim$$3$\,ms fsync rather than the
+$100\,\mu s$ table value, which is why its collapse there is
+$\sim$$6000\times$ rather than $200\times$.)
 
-\paragraph{Calibration against the real engine.} So the projection rests on a model checked where we
-\emph{can} measure, \texttt{ob-calibrate} feeds the simulator the engine's measured loopback latencies. At
-matched load it reproduces the in-fabric (overlap) commit latency to within $\sim$$0.1\%$, so the
-durability marginal is absorbed; the serial-fsync tier stacks and is \emph{worse} than the additive
-estimate because the serial write head-of-line-blocks the executor. The simulator predicts the fsync tier
-saturates at $\approx$$340$\,ops/s, and the real engine indeed holds near its floor below $\sim$$300$\,ops/s
-and diverges past $\sim$$370$\,ops/s, the predicted knee reproduced on real software. Only the absolute RDMA
-latencies are substituted.
-
-\paragraph{Real RDMA verbs.} Real \texttt{ibverbs} over SoftRoCE complete an \texttt{RDMA\_WRITE} in
-$\sim$1.5\,\textmu s, squarely inside 1Pipe's $1$--$2\,\mu s$ band; the RC round-trip is
-$\sim$11.8\,\textmu s, above the band because SoftRoCE pays a CPU-bound software receive path where
-hardware RoCE does not (Figure~\ref{fig:softroce}). The verbs therefore corroborate the one-sided-write
-latency the model assumes, not the RTT-bound overlap, which only a P4/RDMA testbed would settle.
+\paragraph{Real RDMA transfers.} Over SoftRoCE (a software implementation
+of the RDMA protocol on ordinary Ethernet), a one-sided
+\texttt{RDMA\_WRITE} completes in $\sim$$1.5\,\mu s$, inside the
+$1$--$2\,\mu s$ band the model assumes for the replication write; the full
+round trip measures $\sim$$11.8\,\mu s$ because SoftRoCE's receive path is
+CPU-bound where hardware is not (Figure~\ref{fig:softroce}). The transfers
+corroborate the one-sided-write latency, not the end-to-end pipeline,
+which only a hardware testbed would settle.
 
 \begin{figure}[h]
 \centering
 \includegraphics[width=0.6\linewidth]{figures/fig_softroce.pdf}
-\caption{Real \texttt{ibverbs} over SoftRoCE: an \texttt{RDMA\_WRITE} completes in $\sim$1.5\,\textmu s,
-inside 1Pipe's $1$--$2\,\mu s$ band; the RC round-trip is $\sim$11.8\,\textmu s, above the band because
-SoftRoCE is CPU-bound. The verbs corroborate the one-sided-write latency the model assumes, not the
-RTT-bound overlap.}
+\caption{Real RDMA transfers over SoftRoCE. The one-sided write sits
+inside the modeled $1$--$2\,\mu s$ band; the round trip is CPU-bound in
+software and lands above it.}
 \label{fig:softroce}
 \end{figure}
 
-\section{libOS Implementation Details}
+\paragraph{Recovery under sustained load.} A recovering replica converges
+only while replay outruns the live stream. In a closed-form catch-up model
+parameterized by the engine's measured replay rate, plain replay livelocks
+once the live rate reaches replay capacity, while the fabric's barrier
+hold, used as backpressure on senders, roughly doubles the live load a
+recovery can outrun while keeping recovery time bounded
+(Figure~\ref{fig:recovery_load}). The real engine's recovery under
+concurrent client load is exercised separately by the crash-injection test
+of \S\ref{sec:eval-correct}; a hardware saturation sweep remains future
+work.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.6\linewidth]{figures/fig_recovery_load.pdf}
+\caption{Recovery time versus sustained live load (catch-up model). Plain
+replay livelocks once the live rate reaches replay capacity; barrier-hold
+backpressure roughly doubles the load a recovery can outrun.}
+\label{fig:recovery_load}
+\end{figure}
+
+\section{Determinism-Shim Details}
 \label{app:libos}
 
-\paragraph{Virtual clock.} Listing~\ref{lst:vclock} shows the interceptor: at each input event time
-advances by the real inter-arrival delta, logged live and replayed on recovery, so every time read is
-wall-clock-faithful and a deterministic function of the input prefix. The unit is one delivered message,
-not one TCP segment: the fabric hands the server one message per \texttt{recv}, so record and replay
-consume the identical sequence of reads. The one residual is that time advances only at input events, so a
-fully idle server's clock is frozen between requests and a TTL due in an idle gap is observed lazily, at
-the next input; the value is correct, only the moment deferred. The vDSO is no escape hatch because
-\texttt{LD\_PRELOAD} overrides the exported symbols.
+\paragraph{Virtual clock.} Listing~\ref{lst:vclock} shows the interceptor.
+At each input event, time advances by the real inter-arrival gap, logged
+during the live run and replayed on recovery, so every read is
+wall-clock-faithful and a deterministic function of the input prefix. The
+unit of advancement is one delivered message, not one TCP segment: the
+fabric hands the server one message per \texttt{recv}, so record and
+replay consume identical read sequences. One residual: time advances only
+at input events, so an idle server's clock is frozen between requests and
+a TTL due during an idle gap is observed at the next input---the value is
+correct, the observation deferred. The vDSO fast path is not an escape
+hatch, because \texttt{LD\_PRELOAD} overrides the exported symbols.
 
-\begin{lstlisting}[style=cstyle,caption={The virtual clock: at each input event time advances by the
-\emph{real} inter-arrival delta, logged live and replayed on recovery, so every time read is
-wall-clock-faithful \emph{and} a deterministic function of the input prefix. (Over the fabric, \texttt{delta}
-is read from the message's total-order timestamp rather than measured.)},label={lst:vclock},float=h,
+\begin{lstlisting}[style=cstyle,caption={The virtual clock. At each input
+event, time advances by the \emph{real} inter-arrival gap, logged live and
+replayed on recovery. Over the fabric, \texttt{delta} is derived from the
+message's total-order timestamp rather than measured.},label={lst:vclock},float=h,
 basicstyle=\ttfamily\footnotesize]
 ssize_t recv(int fd, void *b, size_t n, int fl) {
   ssize_t r = real_recv(fd, b, n, fl);
   if (r > 0 && is_conn(fd)) {           // a deterministic input event:
-    long long delta = recording        //   wall-clock delta since last input,
+    long long delta = recording         //   wall-clock delta since last input,
         ? log_delta(now() - last)       //   measured + logged live, or
         : replay_delta();               //   replayed from the log on recovery
     atomic_fetch_add(&ticks, delta);    //   advance virtual time by it
@@ -869,159 +1266,163 @@ int clock_gettime(clockid_t c, struct timespec *t) {
 }
 \end{lstlisting}
 
-\paragraph{The \texttt{RDRAND}/\texttt{RDTSC} holes.} Time and randomness are virtualized through the
-libc, syscall, and device-file surfaces, but two userspace instructions take no syscall and export no
-symbol. \texttt{RDRAND} feeds OpenSSL (masked via \texttt{OPENSSL\_ia32cap}) and V8's \texttt{Math.random}
-seed; the \texttt{getrandom} trap never sees that seed, so we pin it at the V8 layer with a recorded
-\texttt{--random-seed}. \texttt{RDTSC} (the timestamp counter) is used by none of our five servers for
-externally-visible time but is not yet generally pinned. A fully general guarantee would trap both,
-\texttt{RDTSC} via \texttt{prctl(PR\_SET\_TSC)} and \texttt{RDRAND} via the same instruction-trap path, and
-emulate them from the virtual clock/seed.
+\paragraph{The \texttt{RDRAND}/\texttt{RDTSC} holes.} Time and randomness
+are virtualized at the library, system-call, and device-file surfaces, but
+two user-space CPU instructions take no system call and export no symbol.
+\texttt{RDRAND} feeds OpenSSL (masked via \texttt{OPENSSL\_ia32cap}) and
+V8's \texttt{Math.random} seed, which we pin with a recorded
+\texttt{--random-seed} launch flag. \texttt{RDTSC} is used by none of our
+fifteen applications for externally visible state but is not yet generally
+pinned. A fully general guarantee would trap both---\texttt{RDTSC} via
+\texttt{prctl(PR\_SET\_TSC)} and \texttt{RDRAND} via the instruction-trap
+path---and emulate them from the virtual clock and seed.
 
-\paragraph{Engineering realities.} Making ``unmodified'' credible meant handling the awkward edges of
-interposition: the \texttt{LD\_PRELOAD} early-init trap, glibc symbol versioning (e.g.\ \texttt{pthread\_%
-cond\_wait} must be \texttt{dlvsym}-bound to \texttt{GLIBC\_2.3.2}, since plain \texttt{dlsym} returns the
-old compat shim and hangs threaded servers), a seccomp filter whose supervisor lives in the very process it
-traps, and disabling Memcached's timer-driven maintenance threads. These are not incidental: they are why
-library-level interposition misses the raw-syscall and internal-call paths real servers actually use.
+\paragraph{Engineering realities.} {\sloppy Making ``unmodified'' credible
+meant handling the awkward edges of interposition: the early-initialization
+trap of \texttt{LD\_PRELOAD}; glibc symbol versioning
+(\texttt{pthread\_cond\_wait} must be bound with \texttt{dlvsym} to
+\texttt{GLIBC\_2.3.2}, since plain \texttt{dlsym} returns an old
+compatibility shim and hangs threaded servers); a seccomp filter whose
+supervisor lives in the very process it traps; and disabling Memcached's
+timer-driven maintenance threads. These edges are the substance of the
+per-consumer boundary of \S\ref{sec:rng}: library-level interposition
+alone misses the raw-syscall and internal-call paths real servers use.\par}
 
 \section{Additional Evaluation Detail}
 \label{app:eval}
 
-\paragraph{Recovery fidelity and correctness.} Under fault (\S\ref{sec:eval-correct}), $191{,}073$
-acknowledged writes survived recovery with $0$ lost and $0$ torn, and the Wing--Gong verdict is rendered on
-the $33$-operation contended-register history including the post-recovery read. Determinism is robust rather
-than a lucky single run: across $25$ independent record/crash/replay trials of redis (TTL state) and $8$ of
-Node.js (session state derived from \texttt{Math.random()} \emph{and} \texttt{Date.now()}), the recovered
-state was byte-identical to live in \emph{every} trial while a no-libOS control diverged in every trial.
+\paragraph{Recovery fidelity and correctness.} Under crash injection
+(\S\ref{sec:eval-correct}), $191{,}073$ acknowledged writes survived with
+$0$ lost and $0$ torn; the Wing--Gong verdict is rendered on a
+$33$-operation contended-register history including the post-recovery
+read. Determinism robustness: across $25$ independent record/crash/replay
+trials of Redis (TTL state) and $8$ of Node.js (session state derived from
+\texttt{Math.random()} and \texttt{Date.now()}), recovered state was
+byte-identical to live in every trial, and a no-shim control diverged in
+every trial.
 
-\paragraph{Recovery under sustained load.} A recovering replica restores its snapshot and replays the
-durable log forward to the live cut, converging only while replay outruns the live stream
-(Figure~\ref{fig:recovery_load}). Plain replay livelocks once the live rate reaches replay capacity, while
-the fabric's barrier-hold backpressure throttles senders to the recovering node and roughly doubles the load
-a recovery can outrun. This is a closed-form catch-up model, labelled as such; the real engine's recovery
-under concurrent client load is measured by the crash-injection test (\S\ref{sec:eval-correct}), and a
-real-hardware saturation sweep remains future work.
-
-\begin{figure}[h]
-\centering
-\includegraphics[width=0.6\linewidth]{figures/fig_recovery_load.pdf}
-\caption{Recovery time vs.\ sustained live load (catch-up model, \texttt{ob-recovery}). Plain replay
-livelocks once the live rate reaches replay capacity ($R_{live}\!\geq\!R_{replay}$). The fabric's
-barrier-hold backpressure throttles senders to the recovering node and roughly doubles the load a recovery
-can outrun while keeping recovery time bounded.}
-\label{fig:recovery_load}
-\end{figure}
-
-\section{Generality: The Full Study}
+\section{The Extension Study}
 \label{app:ext}
-This appendix expands \S\ref{sec:ext} with the per-class detail behind Figures~\ref{fig:taxonomy}
-and~\ref{fig:extresults}. The fourth fit-test precondition, bounded output, is an output-commit
-requirement: suppression keys each externalized effect by a per-client high-water-mark, so an application
-whose response is an unbounded stream has no sequence point at which the effect is acknowledged and
-replay-suppressible. Request/response and discrete-message workloads satisfy it; an infinite server-push
-stream does not.
 
-\paragraph{Message brokers contest exactly-once streaming.} A broker's job, total order plus durable
-delivery, is what the fabric already provides. A stock \texttt{redis-server} used as a stream broker recovers
-its entry IDs and consumer offsets byte-identically, because a Redis stream auto-ID (\texttt{<ms>-<seq>})
-derives from the server clock the virtual clock determinizes, the streaming-log analogue of the Nginx
-\texttt{Date} header. The Kafka \emph{partition} model \emph{is} our share-nothing sharding, $N$
-single-thread partitions each with its own log, so a killed partition recovers byte-identically with offsets
-preserved while publish throughput scales near-linearly (Figure~\ref{fig:partscale}). Stock Mosquitto carries
-the result to MQTT, recovering its retained-message store by replaying the publish stream.
+This appendix expands \S\ref{sec:eval-recovery}'s ten extension
+applications. The fit test's fourth precondition---bounded output---is an
+output-commit requirement: suppression keys each externalized effect by a
+per-client high-water mark, so an application whose response is an
+unbounded stream has no sequence point at which an effect is acknowledged
+and replay-suppressible. Request/response and discrete-message workloads
+qualify; an infinite server-push stream does not.
+
+\paragraph{Message brokers.} A broker's job---total order plus durable
+delivery---is what the fabric already provides. A stock
+\texttt{redis-server} used as a stream broker recovers entry IDs and
+consumer offsets byte-identically, because a Redis stream auto-ID derives
+from the server clock the virtual clock determinizes. The Kafka partition
+model \emph{is} share-nothing sharding---$N$ single-threaded partitions,
+each with its own log---so a killed partition recovers byte-identically
+with offsets preserved while publish throughput scales near-linearly
+(Figure~\ref{fig:partscale}). Mosquitto carries the result to MQTT,
+recovering its retained-message store by replaying the publish stream.
 
 \begin{figure}[h]
 \centering
 \includegraphics[width=0.5\linewidth]{figures/fig_partition_scale.pdf}
-\caption{Kafka partition model: $N$ share-nothing single-thread partitions scale publish throughput
-near-linearly (the partitions share nothing, so there is no contention to serialize), reaching $7.9\times$ at
-$8$ partitions (the $4.1\times$ point at $4$ partitions is measurement noise around linear).}
+\caption{Kafka-style partitions: $N$ share-nothing single-thread
+partitions scale publish throughput near-linearly, reaching $7.9\times$ at
+$8$ partitions.}
 \label{fig:partscale}
 \end{figure}
 
-\paragraph{A database on the replay path, not just the checkpoint path.} PostgreSQL recovered only via CRIU
-(\S\ref{sec:criu}) because it is shared-everything. SQLite is single-threaded, so a stock \texttt{python3}
-process on the stdlib \texttt{sqlite3} module recovers by order-log-free \emph{deterministic replay}: rows
-from SQLite's own time (\texttt{strftime}) and PRNG (\texttt{random()}, seeded from \texttt{/dev/urandom}) are
-byte-identical across a crash where a control differs in both. This first SQL database on the replay path
-shows the boundary is shared-everything concurrency, not ``databases.'' The CRIU path covers the rest:
-PostgreSQL's multi-process tree and a multi-threaded MySQL/MariaDB, both checkpoint/restored byte-identically
-with the server live.
+\paragraph{Databases.} PostgreSQL recovers only via CRIU
+(\S\ref{sec:criu}) because it is shared-everything. SQLite is
+single-threaded, so a stock \texttt{python3} process using the standard
+\texttt{sqlite3} module recovers by deterministic \emph{replay}: rows
+derived from SQLite's own time (\texttt{strftime}) and randomness
+(\texttt{random()}, seeded from \texttt{/dev/urandom}) are byte-identical
+across a crash where a control differs in both. The checkpoint path covers
+the rest: PostgreSQL's process tree and a multi-threaded MySQL/MariaDB
+both checkpoint-restore byte-identically with the server live.
 
-\paragraph{Stateful network functions: FT as ordered replay.} An NF is a deterministic packet-processing
-state machine, so its flow state is recoverable by replaying the fabric-ordered packet log, the
-FTMB/Pico-Replication stateful-middlebox problem~\cite{sherry2015ftmb,rajagopalan2013pico}. A software Click
-NF of ClickNP-style~\cite{li2016clicknp} elements (a \texttt{FlowCache} table plus an L4 load-balancer), fed
-packets over a socket, recovers its flow table (each flow's backend affinity \emph{and} conntrack last-seen
-timestamp) byte-identically, where a control's timestamps differ. A stateless restart cannot reconstruct
-this, which is the whole problem stateful-NF-FT exists to solve.
+\paragraph{A stateful network function.} A network function is a
+deterministic packet-processing state machine, so its flow state is
+recoverable by replaying the ordered packet log---the stateful-middlebox
+problem of FTMB and Pico~\citep{sherry2015ftmb,rajagopalan2013pico}. A
+software Click pipeline of ClickNP-style elements~\citep{li2016clicknp} (a
+flow cache plus an L4 load balancer) recovers each flow's backend affinity
+and connection-tracking timestamps byte-identically, where a control's
+timestamps differ; a stateless restart cannot reconstruct this at all.
 
-\paragraph{Stateful microservices contest durable execution.} Durable execution (Temporal, DBOS) rewrites a
-service to externalize its state and non-deterministic effects. OneBarrier gives an unmodified order/checkout
-microservice the same guarantees transparently: across a crash the order book recovers exactly-once \emph{and}
-byte-identically, including the random order ids and timestamps a rewrite would externalize by hand, while a
-control differs. The honest boundary (\S\ref{sec:limits}): a service that calls \emph{other} non-cooperating
-services cannot un-send those effects, so the clean wins are leaf, self-contained services.
+\paragraph{A stateful microservice.} Durable-execution frameworks rewrite
+a service to externalize its state and non-deterministic effects.
+OneBarrier gives an unmodified order/checkout microservice the same
+guarantees transparently: across a crash, the order book recovers
+exactly-once and byte-identically---including the random order IDs and
+timestamps a rewrite would externalize by hand. The honest boundary
+(\S\ref{sec:limits}): a service that calls other, non-cooperating services
+cannot un-send those calls, so the clean wins are leaf services.
 
-\paragraph{Network-infrastructure servers, and a UDP generalization.} The ubiquitous single-process daemons
-fit directly: lighttpd and HAProxy recover their HTTP \texttt{Date} header byte-identically as Nginx does, and
-dnsmasq's cached-record TTL recovers byte-identically under the virtual clock while a control tracks real
-time. dnsmasq also exposed a boundary: DNS is \emph{UDP}, but the clock ticked only on TCP reads. A six-line
-extension to tick on \texttt{recvfrom}/\texttt{recvmsg} makes single-process UDP servers deterministic,
-leaving prior results unchanged. (dnsmasq's TCP path forks per query and resets the tick counter, so UDP is
-the deterministic path, the opposite of the usual assumption.)
+\paragraph{Infrastructure daemons, and a UDP lesson.} lighttpd and HAProxy
+recover their \texttt{Date} headers byte-identically as Nginx does, and
+dnsmasq's cached-record TTLs recover exactly under the virtual clock while
+a control tracks real time. dnsmasq also exposed a boundary worth
+recording: DNS runs over UDP, and the virtual clock originally ticked only
+on TCP reads. A six-line extension ticking on
+\texttt{recvfrom}/\texttt{recvmsg} makes single-process UDP servers
+deterministic---and since dnsmasq's TCP path forks per query, UDP turned
+out to be the \emph{deterministic} path, the reverse of the usual
+assumption. The determinism unit is the message, not the connection.
 
-\paragraph{Cross-shard atomicity is the same primitive.} The obvious objection to sharding is multi-key
-atomicity, which the fabric answers for free: a 1Pipe scattering delivers a group to different destinations at
-one total-order position, atomically (\S\ref{sec:why}), a multi-shard transaction without application-level
-two-phase commit. The same primitive that makes one input durable across replicas makes a multi-shard write
-atomic across shards. We note this as a design consequence, not a measured result.
+\paragraph{Cross-shard atomicity.} The natural objection to sharding is
+multi-key atomicity, which the fabric answers by construction: a scatter
+delivers a group of messages to different destinations at one total-order
+position, atomically---a multi-shard write without application-level
+two-phase commit. We note this as a design consequence, not a measured
+result.
 
 \section{Reproduction}
 \label{app:repro}
-Every quantitative result is reproduced by a single command (Table~\ref{tab:repro}). The determinism
-harnesses each include a no-libOS control that must differ, and the engine results are guarded by named unit
-tests.
+Every quantitative result reproduces with one command
+(Table~\ref{tab:repro}); determinism harnesses each include a no-shim
+control that must differ, and engine results are guarded by named tests.
 
 \begin{table}[h]\centering\small
 \begin{tabular}{ll}
 \toprule
 result (section) & command \\
 \midrule
-FT overlap, RQ2 loopback (\S\ref{sec:eval-overlap}) & \texttt{ob-bench} \\
-discrete-event model + load sweep (\S\ref{sec:eval-overlap}, App.~\ref{app:model}) & \texttt{ob-sim} \\
-model calibration vs.\ real engine (App.~\ref{app:model}) & \texttt{ob-calibrate} \\
-real RDMA verbs (App.~\ref{app:model}) & \texttt{ob-rdma-softroce.sh} \\
-5-app recovery (\S\ref{sec:eval-recovery}) & \texttt{ob-recover.sh all} \\
+ride vs.\ stack, loopback (\S\ref{sec:eval-overlap}) & \texttt{ob-bench} \\
+discrete-event model $+$ load sweep (\S\ref{sec:eval-overlap}) & \texttt{ob-sim} \\
+model calibration (App.~\ref{app:model}) & \texttt{ob-calibrate} \\
+real RDMA over SoftRoCE (App.~\ref{app:model}) & \texttt{ob-rdma-softroce.sh} \\
+five-app recovery (\S\ref{sec:eval-recovery}) & \texttt{ob-recover.sh all} \\
 end-to-end state recovery & \texttt{ob-state-recovery.sh all} \\
-memcached eviction determinism & \texttt{ob-memcached-deterministic.sh} \\
-redis-internal RNG & \texttt{ob-redis-rng.sh} \\
+Memcached eviction determinism & \texttt{ob-memcached-deterministic.sh} \\
+Redis-internal randomness & \texttt{ob-redis-rng.sh} \\
 PostgreSQL CRIU (\S\ref{sec:eval-recovery}) & \texttt{ob-criu-postgres-kvm.sh} \\
 correctness under fault (\S\ref{sec:eval-correct}) & \texttt{ob-app-jepsen} \\
-recovery time (\S\ref{sec:eval-time}) & \texttt{ob-recovery-time.sh} \\
-recovery vs.\ load, backpressure (App.~\ref{app:eval}) & \texttt{ob-recovery} \\
-determinism robustness, $N$ trials (App.~\ref{app:eval}) & \texttt{ob-robust.sh <app> <N>} \\
-libOS overhead, sharding (\S\ref{sec:eval-overhead}) & \texttt{ob-perf.sh} \\
+recovery time (\S\ref{sec:eval-cost}) & \texttt{ob-recovery-time.sh} \\
+recovery vs.\ load (App.~\ref{app:model}) & \texttt{ob-recovery} \\
+determinism robustness (App.~\ref{app:eval}) & \texttt{ob-robust.sh <app> <N>} \\
+shim overhead, sharding (\S\ref{sec:eval-cost}) & \texttt{ob-perf.sh} \\
 deterministic scheduling (\S\ref{sec:threads}) & \texttt{det-mt.sh} \\
-competitors, M4 (\S\ref{sec:eval-compete}) & \texttt{ob-baselines} \\
-passive vs active, RQ5 & \texttt{ob-cpu} \\
-sequencer vs fabric, RQ7 & \texttt{ob-order} \\
-snapshot interval, RQ8 & \texttt{ob-sweep} \\
+mechanism baselines (\S\ref{sec:eval-cost}) & \texttt{ob-baselines} \\
+passive vs.\ active CPU & \texttt{ob-cpu} \\
+sequencer vs.\ fabric ordering & \texttt{ob-order} \\
+snapshot interval & \texttt{ob-sweep} \\
 linearizability & \texttt{ob-lincheck} \\
 \midrule
-Redis Streams broker (\S\ref{sec:ext}) & \texttt{ob-redis-streams.sh} \\
-Kafka partition model (\S\ref{sec:ext}) & \texttt{ob-kafka-partitions.sh} \\
-SQLite deterministic replay (\S\ref{sec:ext}) & \texttt{ob-sqlite.sh} \\
-MySQL/MariaDB CRIU (\S\ref{sec:ext}) & \texttt{ob-criu-mariadb.sh} \\
-Mosquitto MQTT broker (\S\ref{sec:ext}) & \texttt{ob-mqtt.sh} \\
-dnsmasq DNS resolver (\S\ref{sec:ext}) & \texttt{ob-dns.sh} \\
-lighttpd / HAProxy (\S\ref{sec:ext}) & \texttt{ob-webdate.sh <app>} \\
-software Click NF (\S\ref{sec:ext}) & \texttt{ob-clicknf.sh} \\
-stateful microservice (\S\ref{sec:ext}) & \texttt{ob-microservice.sh} \\
+Redis Streams broker (App.~\ref{app:ext}) & \texttt{ob-redis-streams.sh} \\
+Kafka partition model (App.~\ref{app:ext}) & \texttt{ob-kafka-partitions.sh} \\
+SQLite deterministic replay (App.~\ref{app:ext}) & \texttt{ob-sqlite.sh} \\
+MySQL/MariaDB CRIU (App.~\ref{app:ext}) & \texttt{ob-criu-mariadb.sh} \\
+Mosquitto MQTT broker (App.~\ref{app:ext}) & \texttt{ob-mqtt.sh} \\
+dnsmasq DNS resolver (App.~\ref{app:ext}) & \texttt{ob-dns.sh} \\
+lighttpd / HAProxy (App.~\ref{app:ext}) & \texttt{ob-webdate.sh <app>} \\
+software Click NF (App.~\ref{app:ext}) & \texttt{ob-clicknf.sh} \\
+stateful microservice (App.~\ref{app:ext}) & \texttt{ob-microservice.sh} \\
 \bottomrule
 \end{tabular}
-\caption{Result-to-command map. Rust engine binaries run via \texttt{cargo run --release -p onebarrier --bin
-<name>}, and libOS harnesses are shell scripts under \texttt{interpose/}.}
+\caption{Result-to-command map. Engine binaries run via \texttt{cargo run
+--release -p onebarrier --bin <name>}; shim harnesses are shell scripts
+under \texttt{interpose/}.}
 \label{tab:repro}
 \end{table}
