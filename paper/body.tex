@@ -1,6 +1,7 @@
 % ===========================================================================
 % OneBarrier — body.tex
-% Framing: four explicit conditions (O, R, D, L) under which transparent
+% Framing: four explicit conditions (Order, Barrier, Durability,
+% Determinism) under which transparent
 % fault tolerance adds nothing to the critical path; the determinism shim
 % carries the empirical weight; 1Pipe is the instantiation, explained from
 % first principles for readers who have never seen it.
@@ -61,46 +62,47 @@ state four explicit conditions under which all three costs disappear, prove
 each elimination as a structural property of the conditions, and demonstrate
 a system that meets them. Three conditions concern the network:
 \begin{itemize}[leftmargin=1.4em,itemsep=1pt,topsep=2pt]
-\item[\textbf{O}] (\emph{order}): the network delivers all messages, at all
+\item[\Order:] the network delivers all messages, at all
   receivers, in a single global order, identified by a timestamp on each
   message.
-\item[\textbf{R}] (\emph{reliability barrier}): the network confirms
+\item[\Barrier:] the network confirms
   delivery through a \emph{commit barrier}---a point in time at which a host
   knows that every message ordered up to timestamp $T$ has been delivered
   and none can be lost.
-\item[\textbf{D}] (\emph{durability within the barrier}): each message is
+\item[\Durability:] each message is
   copied to backup nodes, and the copy completes no later than the message's
   commit barrier.
 \end{itemize}
-Under O the order log vanishes, because the network itself remembers the
-order (\S\ref{sec:conditions}). Under O and R a consistent snapshot needs no
-coordination at all: every node independently cuts at the same timestamp
-(\S\ref{sec:conditions}). Under R and D the output hold costs nothing,
-because the wait it requires---``is the producing state durable?''---ends at
-the same barrier the reply already waits for. Fault tolerance then adds no
-round trip to any request: it is a byproduct of guarantees the network
-provides for its own correctness.
+Under \Order the order log vanishes, because the network itself remembers
+the order (\S\ref{sec:conditions}). Under \Order and \Barrier a consistent
+snapshot needs no coordination at all: every node independently cuts at the
+same timestamp (\S\ref{sec:conditions}). Under \Barrier and \Durability the
+output hold costs nothing, because the wait it requires---``is the
+producing state durable?''---ends at the same barrier the reply already
+waits for. Fault tolerance then adds no round trip to any request: it is a
+byproduct of guarantees the network provides for its own correctness.
 
 The fourth condition falls to the host:
 \begin{itemize}[leftmargin=1.4em,itemsep=1pt,topsep=2pt]
-\item[\textbf{L}] (\emph{local determinism}): given the same ordered inputs,
+\item[\Determinism:] given the same ordered inputs,
   the server computes the same state and outputs. Real servers violate this
   locally---they read the clock, draw random numbers, and interleave
   threads.
 \end{itemize}
-The bulk of our experimental work shows that L is closable \emph{from the
-outside}, for unmodified binaries, at a few percent overhead: a user-space
+The bulk of our experimental work shows that \Determinism is closable
+\emph{from the outside}, for unmodified binaries, at a few percent
+overhead: a user-space
 shim, loaded ahead of the standard C library with the dynamic linker's
 \texttt{LD\_PRELOAD} mechanism, virtualizes time, randomness, and thread
 scheduling so that replay is byte-identical (\S\ref{sec:libos}).
 
 \paragraph{The system.} OneBarrier realizes the four conditions end to end.
-Conditions O, R, and D are supplied by 1Pipe~\citep{li2021onepipe}, a
+\Order, \Barrier, and \Durability are supplied by 1Pipe~\citep{li2021onepipe}, a
 communication layer for data centers that establishes a single global
 message order inside the network switches and confirms delivery with an
 aggregated commit barrier, at round-trip times of one to two microseconds
 over RDMA (\S\ref{sec:fabric}; no familiarity with 1Pipe is assumed).
-Condition L is supplied by our determinism shim. The name records the
+\Determinism is supplied by our shim. The name records the
 central identity: the output-commit hold and the network's reliable-delivery
 barrier are \emph{one barrier}.
 
@@ -122,13 +124,14 @@ recovery protocols are machine-checked in TLA+.
 
 \paragraph{Contributions.}
 \begin{itemize}[leftmargin=1.4em,itemsep=1pt,topsep=2pt]
-\item A precise statement of the four conditions (O, R, D, L) under which
+\item A precise statement of the four conditions (\Order, \Barrier,
+  \Durability, \Determinism) under which
   transparent fault tolerance adds no critical-path cost, with structural
   arguments for each cost's elimination and machine-checked protocol
   specifications (\S\ref{sec:conditions}, Appendix~\ref{app:tla}). The
   conditions double as an analysis: each prior transparent system lacked at
   least one, and the one it lacked is the cost it paid (\S\ref{sec:why}).
-\item A user-space determinism shim that closes condition L for unmodified
+\item A user-space determinism shim that closes \Determinism for unmodified
   binaries---virtual time, virtualized randomness, and share-nothing
   sharding in place of thread scheduling---together with a characterization
   of \emph{where} the local-determinism boundary lies: which servers can be
@@ -191,11 +194,12 @@ output hold in full. VMware FT~\citep{scales2010vmwareft} obtained order by
 brute force, recording and shipping every non-deterministic event so a
 backup could execute in lock-step; it paid the order log as serialized,
 uniprocessor execution. LLFT~\citep{zhao2013llft} came closest in spirit to
-condition O: it imposed a total order on messages in \emph{host software}
+\Order: it imposed a total order on messages in \emph{host software}
 (a leader-determined virtual synchrony~\citep{birman1987isis}), which
 eliminates the order log. But host-software ordering makes the primary a
 sequencer, its backups also execute every request (semi-active
-replication, its default mode), and---lacking R and D---it declined the output hold rather
+replication, its default mode), and---lacking \Barrier and
+\Durability---it declined the output hold rather
 than making it cheap: the primary replies \emph{before} its backups know
 the ordering, and safety is recovered only because every peer is required
 to be an LLFT group that holds the ordering information the primary
@@ -214,7 +218,7 @@ and eventually executes it (the leader synchronously, the others lazily),
 and applications are written against the protocol library rather than run
 as stock binaries. Derecho~\citep{jha2019derecho} brings ordered, reliable
 group communication to RDMA clusters, again as a library for rewritten,
-actively replicated applications. These systems satisfy O; none is
+actively replicated applications. These systems satisfy \Order; none is
 transparent, and none makes durability a byproduct of a delivery barrier.
 The rewrite frameworks (Temporal~\citep{temporal},
 Flink~\citep{carbone2015flink}) sidestep all three costs by changing the
@@ -232,7 +236,7 @@ HyCoR & per-window order log & checkpoint + log & order log per message \\
 NOPaxos / Eris & in-network order (unreliable) & host quorum of logs & app rewrite; $N\times$ (lazy) execution \\
 Temporal / Flink & application rewrite & external store & the rewrite itself \\
 \midrule
-\textbf{OneBarrier} & in-network order (O) & in-barrier replicas (D) & none beyond the barrier (R) \\
+\textbf{OneBarrier} & in-network order (\Order) & in-barrier replicas (\Durability) & none beyond the barrier (\Barrier) \\
 \bottomrule
 \end{tabular}
 \caption{Prior systems, organized by the conditions of \S\ref{sec:intro}.
@@ -251,10 +255,10 @@ surrendered guarantee, came from.}
 \label{fig:prior}
 \end{figure}
 
-No prior system satisfied O, R, and D simultaneously, and none combined
-them with a demonstration that condition L---local determinism of real,
-unmodified binaries---is closable in practice. Those two gaps are what this
-paper fills.
+No prior system satisfied \Order, \Barrier, and \Durability
+simultaneously, and none combined them with a demonstration that
+\Determinism is closable in practice for real, unmodified binaries. Those
+two gaps are what this paper fills.
 
 \section{Four Conditions That Make Fault Tolerance Free}
 \label{sec:conditions}
@@ -273,22 +277,23 @@ package these classical ingredients as properties a \emph{network} can
 provide to an \emph{unmodified} application:
 
 \begin{itemize}[leftmargin=1.4em,itemsep=2pt,topsep=2pt]
-\item[\textbf{O}] Every message carries a timestamp drawn from one global
+\item[\Order:] Every message carries a timestamp drawn from one global
   order, and every receiver's messages are delivered in timestamp order.
-\item[\textbf{R}] For every timestamp $T$, each host eventually learns that
+\item[\Barrier:] For every timestamp $T$, each host eventually learns that
   \emph{all} messages with timestamps $\le T$ have been delivered and are no
   longer at risk of loss. We call the instant of learning this the
   \emph{commit barrier for $T$}. (This is the delivery-confirmation phase of
   a two-phase commit~\citep{gray1978notes}, aggregated across the network.)
-\item[\textbf{D}] When a message is delivered to its destination, a copy of
+\item[\Durability:] When a message is delivered to its destination, a copy of
   it reaches $k-1$ backup nodes---at the same position in the global
   order---no later than that message's commit barrier.
-\item[\textbf{L}] The application is a deterministic function of its ordered
-  input sequence: same inputs, same order $\Rightarrow$ same state and same
-  outputs.
+\item[\Determinism:] The application is a deterministic function of its
+  ordered input sequence: same inputs, same order $\Rightarrow$ same state
+  and same outputs.
 \end{itemize}
 
-O, R, and D are properties a network either has or lacks; L is a property
+\Order, \Barrier, and \Durability are properties a network either has or
+lacks; \Determinism is a property
 of the host and application, and \S\ref{sec:libos} shows how to manufacture
 it for unmodified binaries. Figure~\ref{fig:conditions} previews the
 mapping from the three classical costs to the conditions that eliminate
@@ -298,8 +303,8 @@ them.
 \centering
 \includegraphics[width=0.68\linewidth]{figures/fig_conditions.pdf}
 \caption{The three classical costs of transparent fault tolerance, and the
-condition that eliminates each. Conditions O, R, D are properties of the
-network; condition L (local determinism) is manufactured for unmodified
+condition that eliminates each. \Order, \Barrier, and \Durability are
+properties of the network; \Determinism is manufactured for unmodified
 binaries by a user-space shim.}
 \label{fig:conditions}
 \end{figure}
@@ -307,9 +312,10 @@ binaries by a user-space shim.}
 \subsection{What each condition eliminates}
 \label{sec:props}
 
-\paragraph{O $+$ L: the order log vanishes.} Under L, the server's state
+\paragraph{\Order $+$ \Determinism: the order log vanishes.} Under
+\Determinism, the server's state
 after processing $n$ inputs is a function of those inputs and their order.
-Under O, that order is the timestamp order, which the network itself
+Under \Order, that order is the timestamp order, which the network itself
 establishes and every delivered message carries. A recovering node therefore
 replays the saved inputs sorted by their timestamps and reaches exactly the
 failed node's state---no recorded order log, because the order was never an
@@ -317,10 +323,11 @@ accident that needed recording. This is the state-machine-replication
 property~\citep{schneider1990smr} with the network, rather than a consensus
 protocol, acting as the sequencer.
 
-\paragraph{O $+$ R: the snapshot needs no coordination.} To checkpoint,
+\paragraph{\Order $+$ \Barrier: the snapshot needs no coordination.} To
+checkpoint,
 every node applies the same rule independently: process all inputs with
 timestamps $\le T$, process none with timestamps $>T$, then save state. The
-commit barrier for $T$ (condition R) tells the node when it has received
+commit barrier for $T$ (\Barrier) tells the node when it has received
 everything on its side of the line. Because sender and receiver classify
 every message by the identical predicate---its timestamp---no message can
 straddle the cut, so the cut is consistent \emph{and the channels are
@@ -328,16 +335,18 @@ empty}: there is no in-flight state to record. This is strictly simpler
 than the classical marker protocol~\citep{chandy1985snapshots}, which exists
 precisely to handle networks where no such global line is available. The idea of cutting
 at a synchronized timestamp appears in clock-synchronized
-systems~\citep{corbett2012spanner,geng2018huygens}; condition O makes it
+systems~\citep{corbett2012spanner,geng2018huygens}; \Order makes it
 exact rather than approximate, because the timestamps are the delivery
 order.
 
-\paragraph{R $+$ D: the output hold costs nothing.} Output commit requires
-a reply to wait until the state that produced it is durable. Under O and L,
+\paragraph{\Barrier $+$ \Durability: the output hold costs nothing.} Output
+commit requires
+a reply to wait until the state that produced it is durable. Under \Order
+and \Determinism,
 ``the producing state'' is determined by the ordered input prefix, so the
 requirement reduces to: \emph{the inputs up to this reply's cause must be
-replicated}. Condition D says that replication completes by the commit
-barrier; condition R says the reply already waits for that barrier, because
+replicated}. \Durability says that replication completes by the commit
+barrier; \Barrier says the reply already waits for that barrier, because
 the network does not confirm delivery any earlier. The two waits---the
 durability wait fault tolerance needs and the delivery-confirmation wait
 the network imposes anyway---end at the same instant. They are not
@@ -353,7 +362,7 @@ costing a multiple of request latency and costing nothing.
 \begin{figure}[tb]
 \centering
 \includegraphics[width=0.58\linewidth]{figures/fig_barrier_timeline.pdf}
-\caption{Condition D inside condition R. The replication of a message to
+\caption{\Durability inside \Barrier. The replication of a message to
 its backups (1 round trip) completes before the commit barrier
 ($\sim$1.5 round trips) that the network crosses to confirm delivery
 whether or not fault tolerance is enabled. The reply's durability wait and
@@ -369,16 +378,17 @@ by attempting to \emph{break} it---placing the durable write after the
 barrier instead of within it, and watching the cost reappear
 (\S\ref{sec:eval-overlap}).
 
-\subsection{A network that meets O, R, and D}
+\subsection{A network that meets Order, Barrier, and Durability}
 \label{sec:fabric}
 
 The conditions are not hypothetical. 1Pipe~\citep{li2021onepipe} is a
 communication layer for data-center networks, demonstrated on commodity
 RDMA network cards and a programmable switch~\citep{bosshart2014p4}, that
-provides exactly O and R, and contains the replication primitive D needs.
+provides exactly \Order and \Barrier, and contains the replication
+primitive \Durability needs.
 Since we build on it, we describe it here from first principles.
 
-\emph{Ordering (O).} Every sender stamps each message with a timestamp from
+\Order. Every sender stamps each message with a timestamp from
 its local clock. Network switches, which see all traffic, continuously
 compute and propagate a \emph{barrier}: the smallest timestamp that could
 still be carried by any message in flight through them. A receiver holds
@@ -387,7 +397,7 @@ barrier has passed them. The result is one global delivery order without
 any central sequencer---the switch aggregation is the sequencer, and it
 scales with the network rather than with any single host.
 
-\emph{Reliability (R).} On top of ordered best-effort delivery, 1Pipe's
+\Barrier. On top of ordered best-effort delivery, 1Pipe's
 reliable mode runs a two-phase commit: messages are first delivered and
 acknowledged end-to-end (recovering any losses), and a second, aggregated
 barrier round then confirms to every participant that delivery up to
@@ -398,21 +408,22 @@ directly, without involving the remote CPU---a round trip is $1$--$2\,\mu
 s$, and 1Pipe reports reliable delivery in roughly $21\,\mu s$ at scale,
 end to end.
 
-\emph{Replication (D).} Because delivery order is global, a sender can
+\Durability. Because delivery order is global, a sender can
 \emph{scatter} copies of one message to several destinations at a single
 position in the global order, in one round trip. Directing each input's
-copies at $k-1$ backup nodes gives condition D: the copies land within the
+copies at $k-1$ backup nodes gives \Durability: the copies land within the
 $1.5$-round-trip window the commit barrier already spans.
 
 Nothing in \S\ref{sec:props} depends on these particular mechanisms or
 speeds; any network meeting the definitions would do. A host-software
-sequencer, for example, meets O at the cost of becoming a throughput
+sequencer, for example, meets \Order at the cost of becoming a throughput
 bottleneck---a cost we measure in \S\ref{sec:eval-cost}. What the
-in-network realization contributes is that O, R, and D are provided
+in-network realization contributes is that \Order, \Barrier, and
+\Durability are provided
 \emph{below} the application at microsecond scale, where the three
 classical costs would otherwise be the dominant share of request latency.
 
-\section{Meeting Condition L: Determinism for Unmodified Binaries}
+\section{Manufacturing Determinism for Unmodified Binaries}
 \label{sec:libos}
 
 The network supplies the input order; the host must supply everything else
@@ -492,7 +503,7 @@ so timer-driven reads cannot desynchronize replay. And the clock remains
 faithful to wall time, so TTLs expire at true wall-clock moments rather
 than on an input-count schedule. Over the fabric, the logged gap is simply
 derived from the message's own global timestamp, which is already durable
-under condition D---the time log and the input log are the same log.
+under \Durability---the time log and the input log are the same log.
 (Implementation details and code in Appendix~\ref{app:libos}.) The
 sharpest demonstration is Nginx: the \texttt{Date} header it formats deep
 inside its own time cache is byte-identical between the live run and a
@@ -557,7 +568,7 @@ stream and the virtual clock.
 \caption{Share-nothing shards beat one multi-worker process.}
 \label{fig:sharding}
 \end{subfigure}
-\caption{Meeting condition L for multi-threaded servers. (a) A Kendo-style
+\caption{Meeting \Determinism for multi-threaded servers. (a) A Kendo-style
 deterministic scheduler collapses throughput on a contended server. (b) The
 practical path is share-nothing sharding: four single-thread Memcached
 shards exceed one four-worker process while staying deterministic (each
@@ -615,19 +626,20 @@ reconnecting from a fresh address does not (\S\ref{sec:limits}).
 
 Figure~\ref{fig:arch} assembles the pieces. An unmodified share-nothing
 server runs over the determinism shim; its sockets are routed onto the
-fabric, and its local non-determinism is virtualized (condition L). The
-fabric delivers inputs in global timestamp order (O), confirms them at the
-commit barrier (R), and scatters each input to $k-1$ backup nodes within
-that barrier (D). Algorithm~\ref{alg:ft} gives the per-replica protocol.
+fabric, and its local non-determinism is virtualized (\Determinism). The
+fabric delivers inputs in global timestamp order (\Order), confirms them
+at the commit barrier (\Barrier), and scatters each input to $k-1$ backup
+nodes within that barrier (\Durability). Algorithm~\ref{alg:ft} gives the
+per-replica protocol.
 
 \begin{figure}[tb]
 \centering
 \includegraphics[width=0.58\linewidth]{figures/fig_arch.pdf}
 \caption{OneBarrier. An unmodified server runs over the determinism shim
-(condition L), which routes its sockets onto a fabric providing global
-order (O), a delivery commit barrier (R), and in-barrier replication of
-every input (D). Replies are released at the barrier---the same barrier
-the fabric crosses to confirm delivery.}
+(\Determinism), which routes its sockets onto a fabric providing global
+order (\Order), a delivery commit barrier (\Barrier), and in-barrier
+replication of every input (\Durability). Replies are released at the
+barrier---the same barrier the fabric crosses to confirm delivery.}
 \label{fig:arch}
 \end{figure}
 
@@ -649,15 +661,15 @@ recovery is exactly-once.
 \caption{OneBarrier live and recovery paths (per replica).}
 \label{alg:ft}
 \begin{algorithmic}[1]
-\Procedure{OnDeliver}{$(\mathit{ts}, \mathit{op})$, \textit{live}}\Comment{fabric delivers in \texttt{ts} order (O)}
+\Procedure{OnDeliver}{$(\mathit{ts}, \mathit{op})$, \textit{live}}\Comment{fabric delivers in \texttt{ts} order (\Order)}
   \State $\mathit{log}.\textsc{append}(\mathit{ts}, \mathit{op})$
   \If{\textit{live}}
-     \State scatter input to $k-1$ backups at position \texttt{ts}\Comment{1 RTT, inside the barrier (D)}
+     \State scatter input to $k-1$ backups at position \texttt{ts}\Comment{1 RTT, inside the barrier (\Durability)}
   \EndIf
-  \State $\mathit{out} \gets \textsc{Apply}(\mathit{op})$\Comment{deterministic transition (L)}
+  \State $\mathit{out} \gets \textsc{Apply}(\mathit{op})$\Comment{deterministic transition (\Determinism)}
   \If{$\mathit{out}.\mathit{seq} > \mathit{hwm}[\mathit{out}.\mathit{client}]$}\Comment{not yet externalized}
      \State $\mathit{hwm}[\mathit{out}.\mathit{client}] \gets \mathit{out}.\mathit{seq}$
-     \If{\textit{live}} release $\mathit{out}$ when the commit barrier passes \texttt{ts}\Comment{output commit $=$ barrier (R)}
+     \If{\textit{live}} release $\mathit{out}$ when the commit barrier passes \texttt{ts}\Comment{output commit $=$ barrier (\Barrier)}
      \EndIf
   \EndIf\Comment{on replay, duplicate outputs are dropped: exactly-once}
 \EndProcedure
@@ -715,8 +727,8 @@ linearizability checks of \S\ref{sec:eval-correct}. Every result in
 \label{sec:eval}
 
 Four questions, one per subsection:
-\textbf{Q1}~Can condition L really be closed for unmodified binaries
-(\S\ref{sec:eval-recovery})?
+\textbf{Q1}~Can \Determinism really be manufactured for unmodified
+binaries (\S\ref{sec:eval-recovery})?
 \textbf{Q2}~Is the recovered service \emph{correct}, not merely identical
 (\S\ref{sec:eval-correct})?
 \textbf{Q3}~Does the durable write ride the commit barrier or stack on top
@@ -832,12 +844,13 @@ small history (Appendix~\ref{app:eval}).
 \subsection{Q3: Does durability ride the barrier, or stack on it?}
 \label{sec:eval-overlap}
 
-Section~\ref{sec:props} claims that under conditions R and D the durable
+Section~\ref{sec:props} claims that under \Barrier and \Durability the
+durable
 write adds no round trip because it completes inside a barrier the network
 crosses anyway. The falsifiable form of the claim is comparative: put the
-durable write \emph{inside} the barrier (condition D holds) and its
+durable write \emph{inside} the barrier (\Durability holds) and its
 marginal cost should be microseconds of copying, not a round trip; put it
-\emph{after} the barrier (condition D broken, as with a synchronous disk
+\emph{after} the barrier (\Durability broken, as with a synchronous disk
 write) and the classical output-commit cost should reappear in full. We
 run both on the real engine over a loopback network
 (Table~\ref{tab:rq2}).
@@ -847,7 +860,7 @@ run both on the real engine over a loopback network
 \toprule
 durability placement & delivery p50 & marginal durability cost & commit p50 \\
 \midrule
-inside the barrier (D holds) & $2014\,\mu s$ & $\boldsymbol{+4.59\,\mu s}$ & $2018\,\mu s$ \\
+inside the barrier (\Durability holds) & $2014\,\mu s$ & $\boldsymbol{+4.59\,\mu s}$ & $2018\,\mu s$ \\
 after the barrier (fsync)    & $3042\,\mu s$ & $\boldsymbol{+2963\,\mu s}$ & $6016\,\mu s$ \\
 \bottomrule
 \end{tabular}
@@ -955,7 +968,7 @@ $\sim$$2\%$, randomness within noise, capture $<$$5\%$.}
 \end{figure}
 
 \paragraph{Against the mechanisms the conditions eliminate.} To isolate
-what conditions O and D save, we reimplemented the two mechanisms they
+what \Order and \Durability save, we reimplemented the two mechanisms they
 replace \emph{inside the same engine}---a HyCoR-style per-input order log
 and an LLFT-style host-software sequencer---so everything else is held
 equal (these are mechanism baselines, not the released systems). Removing
@@ -973,7 +986,7 @@ executes (Figure~\ref{fig:resource}a).
 \centering
 \includegraphics[width=0.52\linewidth]{figures/fig_competitors.pdf}
 \caption{Throughput against same-engine reimplementations of the
-mechanisms the conditions eliminate: the per-input order log (condition O
+mechanisms the conditions eliminate: the per-input order log (\Order
 removes it) and the host-software sequencer (in-network ordering removes
 it). OneBarrier beats the order-log tier by $1.5$--$2.2\times$.}
 \label{fig:competitors}
@@ -1048,10 +1061,11 @@ software---and which releases output without waiting for its backups,
 recovering safety by requiring every peer to be an LLFT group---and
 HyCoR~\citep{zhou2021hycor} (successor RRC~\citep{zhou2022rrc}), which
 checkpoints unmodified containers and replays short windows from a logged
-order. Relative to both, OneBarrier's contribution is the explicit O/R/D/L
-factoring; its consequence---moving order \emph{and} durability into the
+order. Relative to both, OneBarrier's contribution is the explicit
+four-condition factoring (\Order, \Barrier, \Durability, \Determinism);
+its consequence---moving order \emph{and} durability into the
 network so that the output hold coincides with a barrier the network
-already crosses; and the breadth of evidence that condition L is closable
+already crosses; and the breadth of evidence that \Determinism is closable
 on real binaries.
 
 \paragraph{Ordering and replication.} Total order via logical time
@@ -1078,7 +1092,7 @@ fabric-supplied order, obtained by rewriting.
 ReVirt~\citep{dunlap2002revirt}, rr~\citep{ocallahan2017rr}, and
 Castor~\citep{mashtizadeh2017castor} record non-determinism for replay and
 find message/shared-memory order to be the dominant cost---the cost
-condition O removes at the source. Deterministic multithreading
+\Order removes at the source. Deterministic multithreading
 (Kendo~\citep{olszewski2009kendo}, CoreDet~\citep{bergan2010coredet},
 dThreads~\citep{liu2011dthreads}) and execute-then-verify
 replication~\citep{kapritsos2012eve,guo2014rex} trade throughput for
@@ -1116,10 +1130,11 @@ Transparent fault tolerance did not fail because recovery is hard; it
 failed because every system paid for ordering, snapshot coordination, and
 output holding on networks that provided none of them. Stated as
 conditions, the diagnosis becomes a design: a network that delivers in one
-global order (O), confirms delivery at a commit barrier (R), and
-replicates each message within that barrier (D) eliminates all three costs
-structurally, and a user-space shim closes the remaining local
-non-determinism (L) of unmodified binaries at a few percent overhead. On a
+global order (\Order), confirms delivery at a commit barrier (\Barrier),
+and replicates each message within that barrier (\Durability) eliminates
+all three costs structurally, and a user-space shim closes the remaining
+local non-determinism (\Determinism) of unmodified binaries at a few
+percent overhead. On a
 fabric that meets the conditions at microsecond scale, fifteen stock
 applications---caches, web servers, brokers, databases, a network
 function---recover byte-identically, with linearizable histories and

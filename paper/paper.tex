@@ -22,8 +22,15 @@
 \usepackage{algpseudocode}
 
 \usepackage{microtype}
+\usepackage{xspace}
 \usepackage{hyperref}
 \usepackage{url}
+
+% Named fault-tolerance conditions (small caps throughout the paper)
+\newcommand{\Order}{\textsc{Order}\xspace}
+\newcommand{\Barrier}{\textsc{Barrier}\xspace}
+\newcommand{\Durability}{\textsc{Durability}\xspace}
+\newcommand{\Determinism}{\textsc{Determinism}\xspace}
 \hypersetup{
   colorlinks=true,
   linkcolor=arxivaccent,
@@ -91,9 +98,10 @@ paid three costs on the critical path: recording message arrival order for repla
 coordinating a consistent snapshot, and holding each reply until the state that produced
 it was durable. This paper argues the costs are not intrinsic: they are the price of a
 network that guarantees neither order nor delivery. We state four conditions under which
-all three vanish. Three concern the network: messages are delivered in one global order
-(O); delivery is confirmed by a commit barrier (R); and each message is replicated to
-backups before its barrier completes (D). The fourth, local determinism (L), falls to
+all three vanish. Three concern the network: \Order (messages are delivered in one
+global sequence), \Barrier (delivery is confirmed by a commit barrier), and \Durability
+(each message is replicated to backups before its barrier completes). The fourth,
+\Determinism, falls to
 the host: a user-space shim closes it for unmodified binaries at a few percent overhead
 by virtualizing time, randomness, and thread scheduling. OneBarrier realizes all four
 conditions over an in-network total-order fabric (1Pipe) with microsecond round trips.
@@ -115,7 +123,7 @@ Website: \url{https://01.me/research/OneBarrier}
 \begin{center}
 \includegraphics[width=0.98\linewidth]{figures/fig_headline.pdf}
 \captionof{figure}{(a) A durable write \emph{inside} the network's commit barrier
-(condition D) adds $4.6\,\mu s$ to the p50 commit path; \emph{after} the barrier, it
+(\Durability) adds $4.6\,\mu s$ to the p50 commit path; \emph{after} the barrier, it
 adds $2963\,\mu s$ (\S\ref{sec:eval-overlap}). (b) At 8 producers, OneBarrier outruns
 same-engine reimplementations of the order log ($1.5\times$) and the host sequencer
 (\S\ref{sec:eval-cost}).}

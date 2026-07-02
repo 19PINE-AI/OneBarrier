@@ -33,7 +33,7 @@ def fig_arch():
             ha='center', fontsize=7.0, color=PAL['gray'])
     # determinism-shim box with sub-components
     box(ax, 0.6, 3.5, 8.8, 4.0, '', '#f5f8fc', PAL['blue'], lw=1.4)
-    ax.text(5.0, 7.05, 'OneBarrier determinism shim  (condition L)', ha='center', fontsize=9.0,
+    ax.text(5.0, 7.05, 'OneBarrier determinism shim  (Determinism)', ha='center', fontsize=9.0,
             color=PAL['blue'], fontweight='bold')
     ax.text(5.0, 6.68, 'LD_PRELOAD · no kernel · no app change', ha='center',
             fontsize=7.0, color=PAL['gray'])
@@ -47,14 +47,14 @@ def fig_arch():
         '#fbf3e6', PAL['orange'], fs=8.0)
     # fabric (narrower, leaves room for the replica box to its right)
     box(ax, 0.6, 0.55, 6.7, 1.7,
-        '1Pipe fabric:\nglobal delivery order (O) +\nreliable commit barrier (R)',
+        '1Pipe fabric:\nglobal delivery order (Order) +\ncommit barrier (Barrier)',
         '#eef6f0', PAL['green'], fs=8.0, bold=True)
     ax.text(3.95, 0.38, 'uncoordinated recovery cut', ha='center', va='top',
             fontsize=7.0, color=PAL['gray'])
     arrow(ax, (5.0, 7.84), (5.0, 7.52), PAL['blue'])
     arrow(ax, (5.0, 3.5), (5.0, 2.32), PAL['green'])
     # in-fabric replica callout, to the RIGHT of the fabric (no overlap)
-    box(ax, 7.6, 0.95, 2.0, 1.0, 'in-fabric replicas\n(durability, D)', '#fdecea', PAL['red'], fs=7.0)
+    box(ax, 7.6, 0.95, 2.0, 1.0, 'in-fabric replicas\n(Durability)', '#fdecea', PAL['red'], fs=7.0)
     arrow(ax, (7.3, 1.45), (7.6, 1.45), PAL['red'], lw=1.1)
     ax.text(8.6, 0.72, '1-RTT copy, inside the barrier', ha='center', va='top',
             fontsize=6.6, color=PAL['red'])
@@ -67,16 +67,16 @@ def fig_conditions():
     fig, ax = plt.subplots(figsize=(5.7, 2.9))
     ax.set_xlim(0, 10); ax.set_ylim(0, 6.3); ax.axis('off')
     rows = [('order log\non every message',
-             'O: delivery in one global order\n→ replay without a log',
+             'Order: one global delivery order\n→ replay without a log',
              PAL['green'], '#eef6f0'),
             ('coordinated snapshot\n(markers + channel state)',
-             'O + R: consistent, uncoordinated\ncut at timestamp $T$, channels empty',
+             'Order + Barrier: uncoordinated\ncut at timestamp $T$, channels empty',
              PAL['green'], '#eef6f0'),
             ('output held for extra\ndurability round trips',
-             'R + D: durability completes inside\nthe barrier → no added round trip',
+             'Barrier + Durability: durable inside\nthe barrier → no added round trip',
              PAL['green'], '#eef6f0'),
             ('local non-determinism\n(time · randomness · threads)',
-             'L: user-space determinism shim\n→ byte-identical replay',
+             'Determinism: user-space shim\n→ byte-identical replay',
              PAL['blue'], '#eaf1fb')]
     ax.text(1.85, 5.85, 'classical critical-path cost', fontsize=8.0,
             color=PAL['gray'], ha='center')

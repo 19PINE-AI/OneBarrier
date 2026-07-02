@@ -187,13 +187,13 @@ def fig_barrier_timeline():
         ax.text(x, -0.05, lab, fontsize=7.4, color=PAL['gray'], ha='center')
     # reliable-delivery commit barrier (what the network pays anyway)
     bar(0.6, 9.6, 2.35, 0.5, PAL['blue'], fc='#dbe6f3')
-    ax.text(5.1, 2.6, 'commit barrier  ·  1.5 RTT  (condition R)',
+    ax.text(5.1, 2.6, 'commit barrier  ·  1.5 RTT  (Barrier)',
             fontsize=8.2, ha='center', va='center', color=PAL['blue'], weight='bold')
     ax.text(5.1, 2.18, 'the network crosses this to confirm delivery, with or without fault tolerance',
             fontsize=7.0, ha='center', color=PAL['gray'])
     # 1-RTT replication, hidden UNDER the barrier
     bar(0.6, 7.4, 1.5, 0.5, PAL['green'], fc='#e3f1ea')
-    ax.text(4.0, 1.75, 'replication to backups  ·  1 RTT  (condition D)',
+    ax.text(4.0, 1.75, 'replication to backups  ·  1 RTT  (Durability)',
             fontsize=8.2, ha='center', va='center', color=PAL['green'])
     # output release marker at the barrier
     ax.scatter([9.6], [1.0], s=70, marker='D', color=PAL['dark'], zorder=4)
@@ -212,7 +212,7 @@ def fig_barrier_timeline():
 def fig_prior_matrix():
     systems = ['Remus', 'VMware FT', 'LLFT', 'HyCoR', 'NOPaxos / Eris',
                'Temporal / Flink', 'OneBarrier']
-    cols = ['order from\nnetwork (O)', 'commit\nbarrier (R)', 'durable in\nbarrier (D)',
+    cols = ['Order (from\nnetwork)', 'Barrier', 'Durability\n(in barrier)',
             'unmodified\napp', 'single\nexecutor']
     # 1 = yes, 0 = no, 0.5 = partial, -1 = not applicable
     M = [
