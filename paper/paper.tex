@@ -85,51 +85,40 @@
 \maketitle
 
 \begin{abstract}
-Transparent fault tolerance---making an unmodified server binary survive crashes, with no
-code changes---has been pursued for four decades and has never reached production. Every
-attempt paid three costs on the critical path of every request: recording the order in
-which messages arrive, so a failed replica can be replayed; coordinating a globally
-consistent snapshot; and holding each reply until the state that produced it is durable.
-Industry chose instead to rewrite applications for frameworks that are fault-tolerant by
-construction, leaving the installed base of stock servers behind.
-
-This paper argues that the three costs are not intrinsic to fault tolerance: they are the
-price of running over a network that guarantees neither order nor delivery. We state four
-explicit conditions under which all three vanish. Three concern the network: messages are
-delivered in a single global order (O); delivery is confirmed by a commit barrier (R); and
-each message is replicated to backups before its barrier completes (D). Under them, the
-order log is unnecessary, a consistent snapshot needs no coordination, and the output hold
-ends at a barrier the network crosses anyway, so fault tolerance adds no round trip. The
-fourth condition, local determinism (L), falls to the host; we show a user-space shim
-closes it for unmodified binaries at a few percent overhead by virtualizing time,
-randomness, and thread scheduling.
-
-OneBarrier realizes all four conditions, supplying O, R, and D from an in-network
-total-order fabric (1Pipe) with microsecond round trips. Fifteen stock
-applications---including Redis, Memcached, Nginx, Node.js, and a multi-process
-PostgreSQL---recover byte-identically; recovered histories are linearizable and
-exactly-once under crash injection; the core protocols are machine-checked in TLA+.
-Measured head to head, a durable write placed inside the barrier adds $4.6\,\mu s$ to a
-request, while the same write placed after the barrier adds three milliseconds. On a
-network that meets the conditions, fault tolerance is a property, not a tax.
+Transparent fault tolerance---making an unmodified server binary survive
+crashes---has been pursued for four decades without reaching production. Every attempt
+paid three costs on the critical path: recording message arrival order for replay,
+coordinating a consistent snapshot, and holding each reply until the state that produced
+it was durable. This paper argues the costs are not intrinsic: they are the price of a
+network that guarantees neither order nor delivery. We state four conditions under which
+all three vanish. Three concern the network: messages are delivered in one global order
+(O); delivery is confirmed by a commit barrier (R); and each message is replicated to
+backups before its barrier completes (D). The fourth, local determinism (L), falls to
+the host: a user-space shim closes it for unmodified binaries at a few percent overhead
+by virtualizing time, randomness, and thread scheduling. OneBarrier realizes all four
+conditions over an in-network total-order fabric (1Pipe) with microsecond round trips.
+Fifteen stock applications---including Redis, Memcached, Nginx, Node.js, and a
+multi-process PostgreSQL---recover byte-identically, with linearizable, exactly-once
+histories under crash injection; the core protocols are machine-checked in TLA+. A
+durable write placed inside the barrier adds $4.6\,\mu s$ to a request; the same write
+placed after it adds three milliseconds. On a network that meets the conditions, fault
+tolerance is a property, not a tax.
 \end{abstract}
 
 \begin{center}
 \small
-Code: \url{https://github.com/bojieli/OneBarrier}
+Code: \url{https://github.com/19PINE-AI/OneBarrier} \\[2pt]
+Website: \url{https://01.me/research/onebarrier}
 \end{center}
 \vspace{-0.2em}
 
 \begin{center}
 \includegraphics[width=0.98\linewidth]{figures/fig_headline.pdf}
-\captionof{figure}{Headline results. (a) Ride versus stack
-(\S\ref{sec:eval-overlap}): a durable write placed \emph{inside} the network's commit
-barrier (condition D) adds $4.6\,\mu s$ to the p50 commit path, while the same write
-placed \emph{after} the barrier adds $2963\,\mu s$---the classical output-commit cost,
-reappearing exactly when condition D is broken. (b) At 8 concurrent producers,
-OneBarrier outruns same-engine reimplementations of the two mechanisms the conditions
-eliminate (\S\ref{sec:eval-cost}): the per-message order log ($1.5\times$) and the
-host-software sequencer.}
+\captionof{figure}{(a) A durable write \emph{inside} the network's commit barrier
+(condition D) adds $4.6\,\mu s$ to the p50 commit path; \emph{after} the barrier, it
+adds $2963\,\mu s$ (\S\ref{sec:eval-overlap}). (b) At 8 producers, OneBarrier outruns
+same-engine reimplementations of the order log ($1.5\times$) and the host sequencer
+(\S\ref{sec:eval-cost}).}
 \label{fig:headline}
 \end{center}
 \vspace{-0.4em}
