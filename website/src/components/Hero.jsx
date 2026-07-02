@@ -2,22 +2,30 @@ import { useRef } from "react";
 import { motion } from "motion/react";
 import { useLoop, eseg, lerp, pulse } from "../lib/anim";
 
-/* Six messages per loop: unordered on the left, total-ordered after the barrier */
+/* Six messages per loop. Left of the blue line: concurrent, arrival order.
+   Past barrier B: sorted into one timestamp order (best-effort delivery).
+   Past commit C: the whole ordered group crosses together — atomic, reliable. */
 const MSGS = [
   { ts: 2, lane: -34, dep: 0.02 },
   { ts: 5, lane: 22, dep: 0.05 },
-  { ts: 3, lane: 8, dep: 0.1 },
+  { ts: 3, lane: 8, dep: 0.09 },
   { ts: 9, lane: -18, dep: 0.13 },
-  { ts: 7, lane: 30, dep: 0.19 },
+  { ts: 7, lane: 30, dep: 0.18 },
   { ts: 11, lane: -8, dep: 0.24 },
 ];
 const ORDER = [2, 3, 5, 7, 9, 11];
+const F1 = 0.22, F2 = 0.12;            // flight to B, then settle into sorted slot
+const G0 = 0.64, G1 = 0.80;            // the ordered group crosses C together
+const FADE = 0.94;
 
 function HeroPipe() {
   const ref = useRef(null);
-  const { t } = useLoop(9000, ref);
+  const { t } = useLoop(11000, ref);
   const W = 1080, H = 150, mid = H / 2;
-  const bx = W * 0.52; // barrier x
+  const bx = W * 0.40;                  // barrier timestamp B (ordering)
+  const cx = W * 0.72;                  // commit barrier C (reliable delivery)
+  const midSlot = (s) => bx + 44 + s * 50;
+  const endSlot = (s) => cx + 40 + s * 44;
 
   return (
     <div ref={ref} aria-hidden="true">
@@ -27,40 +35,61 @@ function HeroPipe() {
         <text x="8" y={mid - 44} fill="var(--muted)" fontSize="11" fontFamily="var(--font-mono)">
           concurrent messages, arrival order
         </text>
-        <text x={W - 8} y={mid - 44} fill="var(--muted)" fontSize="11" fontFamily="var(--font-mono)" textAnchor="end">
-          one total order, delivered
+        <text x={(bx + cx) / 2} y={H - 6} fill="var(--muted)" fontSize="10.5" fontFamily="var(--font-mono)" textAnchor="middle">
+          ordered ≤ B · held for commit
+        </text>
+        <text x={W - 8} y={H - 6} fill="var(--muted)" fontSize="10.5" fontFamily="var(--font-mono)" textAnchor="end">
+          delivered ≤ C · atomic
         </text>
 
-        {/* barrier */}
-        <line x1={bx} y1={16} x2={bx} y2={H - 16} stroke="var(--amber)" strokeWidth="1.5" />
-        <line
-          x1={bx} y1={16} x2={bx} y2={H - 16}
-          stroke="var(--amber)" strokeWidth="7" opacity={0.25 + 0.2 * Math.sin(t * Math.PI * 6)}
-        />
-        <text x={bx} y={12} fill="var(--amber)" fontSize="11" fontFamily="var(--font-mono)" textAnchor="middle">
-          commit barrier
+        {/* barrier timestamp B — ordering */}
+        <line x1={bx} y1={16} x2={bx} y2={H - 16} stroke="var(--blue)" strokeWidth="1.5" />
+        <line x1={bx} y1={16} x2={bx} y2={H - 16} stroke="var(--blue)" strokeWidth="7"
+          opacity={0.18 + 0.14 * Math.sin(t * Math.PI * 6)} />
+        <text x={bx} y={12} fill="var(--blue)" fontSize="11" fontFamily="var(--font-mono)" textAnchor="middle">
+          barrier ts B · order
+        </text>
+
+        {/* commit barrier C — reliable delivery */}
+        <line x1={cx} y1={16} x2={cx} y2={H - 16} stroke="var(--amber)" strokeWidth="1.5" />
+        <line x1={cx} y1={16} x2={cx} y2={H - 16} stroke="var(--amber)" strokeWidth="7"
+          opacity={0.25 + 0.2 * Math.sin(t * Math.PI * 6)} />
+        <text x={cx} y={12} fill="var(--amber)" fontSize="11" fontFamily="var(--font-mono)" textAnchor="middle">
+          commit barrier C · deliver
         </text>
 
         {MSGS.map((m) => {
-          // travel: appear at left, drift with lane offset, cross barrier, snap into slot
-          const u = eseg(t, m.dep, m.dep + 0.62);
           const slot = ORDER.indexOf(m.ts);
-          const cross = eseg(t, m.dep + 0.38, m.dep + 0.62);
-          const x = lerp(lerp(-24, bx, eseg(t, m.dep, m.dep + 0.38)), bx + 70 + slot * 74, cross);
-          const y = mid + m.lane * (1 - cross);
-          const crossed = cross >= 1 - 1e-4;
-          const flash = pulse(t, m.dep + 0.55, m.dep + 0.72);
-          if (u <= 0) return null;
+          const u = eseg(t, m.dep, m.dep + F1);          // drift toward B
+          const sortU = eseg(t, m.dep + F1, m.dep + F1 + F2); // cross B, snap into ts order
+          const groupU = eseg(t, G0, G1);                // whole group crosses C together
+          if (t < m.dep) return null;
+
+          const xB = lerp(lerp(-24, bx, u), midSlot(slot), sortU);
+          const x = lerp(xB, endSlot(slot), groupU);
+          const y = mid + m.lane * (1 - sortU);
+          const ordered = sortU >= 1 - 1e-4;
+          const committed = x >= cx;
+          const bFlash = pulse(t, m.dep + F1, m.dep + F1 + F2);
+          const cFlash = Math.max(0, 1 - Math.abs(x - cx) / 34) * (groupU > 0 && groupU < 1 ? 1 : 0);
+          const fade = 1 - eseg(t, FADE, 0.995);
+
           return (
-            <g key={m.ts} opacity={Math.min(u * 6, 1)}>
+            <g key={m.ts} opacity={Math.min((t - m.dep) * 24, 1) * fade}>
               <circle
                 cx={x} cy={y} r={13}
-                fill={crossed ? "rgba(25,158,112,0.18)" : "rgba(57,135,229,0.16)"}
-                stroke={crossed ? "var(--green)" : "var(--blue)"}
-                strokeWidth="1.3"
+                fill={committed ? "rgba(25,158,112,0.18)" : "rgba(57,135,229,0.16)"}
+                stroke={committed ? "var(--green)" : ordered ? "var(--blue)" : "rgba(57,135,229,0.55)"}
+                strokeWidth={ordered && !committed ? 1.6 : 1.3}
+                strokeDasharray={!ordered ? "3 3" : "none"}
               />
-              {flash > 0 && (
-                <circle cx={x} cy={y} r={13 + flash * 9} fill="none" stroke="var(--amber)" strokeWidth="1" opacity={flash * 0.8} />
+              {bFlash > 0 && (
+                <circle cx={x} cy={y} r={13 + bFlash * 8} fill="none" stroke="var(--blue)"
+                  strokeWidth="1" opacity={bFlash * 0.8} />
+              )}
+              {cFlash > 0 && (
+                <circle cx={x} cy={y} r={13 + cFlash * 9} fill="none" stroke="var(--amber)"
+                  strokeWidth="1" opacity={cFlash * 0.85} />
               )}
               <text x={x} y={y + 3.5} fill="var(--ink)" fontSize="10" fontFamily="var(--font-mono)" textAnchor="middle">
                 {m.ts}
