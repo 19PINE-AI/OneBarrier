@@ -125,13 +125,6 @@ machine-checked in TLA+.
   (\S\ref{sec:system}, \S\ref{sec:eval}).
 \end{itemize}
 
-\paragraph{Assumptions.} Three assumptions bound the claim
-(\S\ref{sec:limits}): durability means surviving fail-stop crashes of
-$f<k$ in-memory replicas, not correlated power loss; replay applies to
-share-nothing or cleanly shardable servers, with a checkpoint-only path
-for the rest; and end-to-end exactly-once requires the client to carry a
-stable identity across reconnection.
-
 \section{Why Transparent Fault Tolerance Has Been Expensive}
 \label{sec:why}
 
