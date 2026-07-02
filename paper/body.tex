@@ -443,7 +443,7 @@ bypassing any intercepted library function; Redis seeds its hash tables by
 reading \texttt{/dev/urandom} through \texttt{fopen}, whose internal calls
 likewise bypass the public symbols. The shim therefore intercepts at the
 system-call level: a seccomp filter (a kernel mechanism that lets a
-designated user-space supervisor service chosen system calls) traps
+designated user-space supervisor handle chosen system calls) traps
 \texttt{getrandom} and fills the buffer from a seeded deterministic
 stream, and a private mount namespace redirects \texttt{/dev/urandom} to a
 deterministic file. This pins every consumer routing through those
@@ -587,7 +587,7 @@ recovery is exactly-once.
   \State $\mathit{out} \gets \textsc{Apply}(\mathit{op})$\Comment{deterministic transition (\Determinism)}
   \If{$\mathit{out}.\mathit{seq} > \mathit{hwm}[\mathit{out}.\mathit{client}]$}\Comment{not yet externalized}
      \State $\mathit{hwm}[\mathit{out}.\mathit{client}] \gets \mathit{out}.\mathit{seq}$
-     \If{\textit{live}} release $\mathit{out}$ when the commit barrier passes \texttt{ts}\Comment{output commit $=$ barrier (\Barrier)}
+     \If{\textit{live}} release $\mathit{out}$ at the commit barrier for \texttt{ts}\Comment{output commit $=$ \Barrier}
      \EndIf
   \EndIf\Comment{on replay, duplicate outputs are dropped: exactly-once}
 \EndProcedure
@@ -694,7 +694,8 @@ trial.
 \label{fig:criu}
 \end{subfigure}
 \caption{(a) Time, randomness, and full-state recovery for the five core
-servers: recovered state equals live state, and a no-shim control differs.
+servers: recovered state equals live state, and a no-shim control differs
+(a dash marks a probe the server does not exercise).
 (b) Whole-process checkpoint time versus image size; a multi-process
 PostgreSQL checkpoint-restores with byte-identical data.}
 \label{fig:recovery}
@@ -735,9 +736,9 @@ opposite of the usual assumption.
 \caption{The ten extension applications across five classes. (a) Each
 recovers byte-identically with the expected control-differs witness (a
 dash marks the checkpoint path, which has no replay-versus-control axis).
-(b) Each application's time- or randomness-derived probe is reproduced
-exactly by recovery, while a no-shim control drifts by the labeled
-amount.}
+(b) For the applications with a time- or randomness-derived probe,
+recovery reproduces it exactly, while a no-shim control drifts by the
+labeled amount.}
 \label{fig:extresults}
 \end{figure}
 
@@ -755,8 +756,8 @@ Wing--Gong checker~\citep{herlihy1990linearizability} searches the
 real-time-overlapping history of a contended register, including the
 post-recovery read, and certifies it linearizable. The two are
 complementary: survival scales to hundreds of thousands of operations; the
-linearizability search is exponential in concurrency and is rendered on a
-$33$-operation history.
+linearizability search is exponential in concurrency, so its verdict is
+rendered on a $33$-operation history.
 
 \subsection{Q3: Does durability ride the barrier, or stack on it?}
 \label{sec:eval-overlap}
@@ -924,9 +925,9 @@ it). OneBarrier beats the order-log tier by $1.5$--$2.2\times$.}
 \caption{Resource cost. (a) Passive replication holds execution CPU near
 $1\times$ ($106$--$123$\,ms) as replicas grow, where active replication
 scales linearly ($206$--$730$\,ms): a $49$--$83\%$ saving. (b) A small
-snapshot interval triples steady apply cost but recovers in
-$\sim$$20\,\mu s$; a large interval is the reverse ($283\times$ slower
-recovery).}
+snapshot interval triples steady apply cost but restores the engine's
+in-memory state in $\sim$$20\,\mu s$; a large interval is the reverse
+($283\times$ slower restore).}
 \label{fig:resource}
 \end{figure}
 
@@ -1121,7 +1122,7 @@ loopback latencies instead of the RDMA parameters, the model reproduces
 the in-barrier commit latency at matched load to within $\sim$$0.1\%$, and
 predicts that the serial-fsync tier saturates at $\approx$$340$\,ops/s;
 the real engine holds near its latency floor below $\sim$$300$\,ops/s and
-diverges past $\sim$$370$\,ops/s---the predicted knee, reproduced on real
+diverges past $\sim$$370$\,ops/s, bracketing the predicted knee on real
 software. Only the absolute RDMA latencies are substituted when the model
 is run at the microsecond point. (At the loopback point the serial tier is
 bound by the \emph{measured} $\sim$$3$\,ms fsync rather than the

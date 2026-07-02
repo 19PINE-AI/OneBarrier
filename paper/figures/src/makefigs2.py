@@ -26,10 +26,10 @@ def arrow(ax, p0, p1, color=PAL['dark'], lw=1.3, style='-|>'):
 def fig_arch():
     fig, ax = plt.subplots(figsize=(5.0, 3.2))
     ax.set_xlim(0, 10); ax.set_ylim(0, 10); ax.axis('off')
-    box(ax, 0.6, 8.35, 8.8, 1.25,
+    box(ax, 0.6, 8.48, 8.8, 1.12,
         'unmodified server\n(Redis · Memcached · Nginx · Node · PostgreSQL)',
         '#eaf1fb', PAL['blue'], fs=7.4, bold=True)
-    ax.text(5.0, 8.08, 'POSIX syscalls: sockets · time · randomness · threads',
+    ax.text(5.0, 8.14, 'POSIX syscalls: sockets · time · randomness · threads',
             ha='center', fontsize=7.0, color=PAL['gray'])
     # determinism-shim box with sub-components
     box(ax, 0.6, 3.5, 8.8, 4.0, '', '#f5f8fc', PAL['blue'], lw=1.4)

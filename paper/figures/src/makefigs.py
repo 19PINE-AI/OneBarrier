@@ -79,7 +79,7 @@ def fig_recovery_time():
 # F8. Share-nothing sharding beats multithreading (memcached).
 # ---------------------------------------------------------------------------
 def fig_sharding():
-    labels = ['-t1', '-t2', '-t4', '-t8', '-t1\n+libOS', '4×-t1\nshards']
+    labels = ['-t1', '-t2', '-t4', '-t8', '-t1\n+shim', '4×-t1\nshards']
     vals   = [342, 575, 821, 1239, 302, 1008]           # k ops/s
     colors = [PAL['gray'], PAL['gray'], PAL['blue'], PAL['gray'], PAL['orange'], PAL['green']]
     fig, ax = plt.subplots(figsize=(3.5, 2.5))

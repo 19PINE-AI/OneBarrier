@@ -1,5 +1,7 @@
 \pdfoutput=1
 \documentclass[11pt]{article}
+% let URLs break at hyphens (long blog-post slugs in the bibliography)
+\PassOptionsToPackage{hyphens}{url}
 
 % Encoding
 \usepackage[utf8]{inputenc}
@@ -26,6 +28,8 @@
 \usepackage{xspace}
 \usepackage{hyperref}
 \usepackage{url}
+% allow URLs to justify smoothly in the bibliography
+\Urlmuskip=0mu plus 1mu\relax
 
 % Named fault-tolerance conditions (small caps throughout the paper)
 \newcommand{\Order}{\textsc{Order}\xspace}
