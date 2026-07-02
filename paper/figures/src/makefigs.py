@@ -86,11 +86,12 @@ def fig_sharding():
     bars = ax.bar(labels, vals, color=colors, width=0.66)
     ax.axhline(821, color=PAL['blue'], ls=':', lw=1.0)
     ax.set_ylabel('throughput (k ops/s)')
-    ax.set_ylim(0, 1400)
+    ax.set_ylim(0, 1720)
     for b, v in zip(bars, vals):
         ax.text(b.get_x()+b.get_width()/2, v+25, f'{v}', ha='center', fontsize=7.6)
     ax.annotate('shards beat one\n4-worker process\n(no lock contention)',
-                xy=(5, 1008), xytext=(2.3, 1180), fontsize=7.5, color=PAL['green'],
+                xy=(5.05, 1130), xytext=(2.4, 1700), ha='center', va='top',
+                fontsize=7.5, color=PAL['green'],
                 arrowprops=dict(arrowstyle='->', color=PAL['green'], lw=0.9))
     ax.grid(axis='x', visible=False)
     finish(fig, P('fig_sharding.pdf'))
@@ -106,13 +107,13 @@ def fig_detsched():
     ax.set_ylabel('lock throughput (M locks/s)')
     for b, v in zip(bars, vals):
         ax.text(b.get_x()+b.get_width()/2, v+0.4, f'{v:.1f}', ha='center', fontsize=8)
-    ax.annotate('3.2× slower\n(4-thread microbench)', xy=(1, 7.6), xytext=(0.55, 16),
+    ax.annotate('3.2× slower\n(4-thread microbench)', xy=(0.88, 6.8), xytext=(0.42, 14),
                 fontsize=8, color=PAL['red'],
                 arrowprops=dict(arrowstyle='->', color=PAL['red'], lw=0.9))
-    ax.text(0.5, 22.5, 'on a contended server\n(memcached -t4): >1000× slower → use shards',
-            ha='center', fontsize=7.3, color=PAL['dark'],
+    ax.text(0.5, 30.2, 'on a contended server\n(memcached -t4): >1000× slower → use shards',
+            ha='center', va='center', fontsize=7.3, color=PAL['dark'],
             bbox=dict(boxstyle='round,pad=0.3', fc='#fff3cd', ec=PAL['orange'], lw=0.8))
-    ax.set_ylim(0, 27)
+    ax.set_ylim(0, 33.5)
     ax.grid(axis='x', visible=False)
     finish(fig, P('fig_detsched.pdf'))
 
@@ -125,18 +126,22 @@ def fig_interval():
     recov_us = np.array([20.7, 58.6, 134.1, 5856.4])
     fig, ax1 = plt.subplots(figsize=(3.5, 2.5))
     ax1.plot(interval, apply_us, '-o', color=PAL['blue'], label='steady apply cost')
-    ax1.set_xscale('log'); ax1.set_yscale('log')
+    ax1.set_xscale('log')
     ax1.set_xlabel('snapshot interval (ops)')
-    ax1.set_ylabel('apply µs/op', color=PAL['blue'])
+    ax1.set_ylabel('apply cost (µs/op)', color=PAL['blue'])
+    ax1.set_ylim(0.3, 1.45)
     ax1.tick_params(axis='y', labelcolor=PAL['blue'])
     ax2 = ax1.twinx(); ax2.spines['top'].set_visible(False)
     ax2.plot(interval, recov_us, '-s', color=PAL['red'], label='recovery time')
     ax2.set_yscale('log')
-    ax2.set_ylabel('recovery µs', color=PAL['red'])
+    ax2.set_ylabel('recovery time (µs, log)', color=PAL['red'])
     ax2.tick_params(axis='y', labelcolor=PAL['red'])
     ax2.grid(False)
-    ax1.annotate('3× steady cost', xy=(64, 1.215), xytext=(120, 1.6), fontsize=7.3, color=PAL['blue'])
-    ax2.annotate('283× recovery', xy=(100000, 5856), xytext=(2000, 5000), fontsize=7.3, color=PAL['red'])
+    ax1.annotate('3× steady cost', xy=(64, 1.215), xytext=(150, 1.3),
+                 fontsize=7.3, color=PAL['blue'])
+    ax2.annotate('283× slower\nrecovery', xy=(100000, 5856), xytext=(2500, 1500),
+                 ha='center', fontsize=7.3, color=PAL['red'],
+                 arrowprops=dict(arrowstyle='->', color=PAL['red'], lw=0.8))
     finish(fig, P('fig_interval.pdf'))
 
 # ---------------------------------------------------------------------------
@@ -171,14 +176,14 @@ def fig_competitors():
     fig, ax = plt.subplots(figsize=(3.5, 2.5))
     x = np.arange(len(prod)); w = 0.26
     ax.bar(x-w, ob,    w, color=PAL['green'], label='OneBarrier')
-    ax.bar(x,   llft,  w, color=PAL['blue'],  label='LLFT (host sequencer)')
-    ax.bar(x+w, hycor, w, color=PAL['red'],   label='HyCoR (order-log)')
+    ax.bar(x,   llft,  w, color=PAL['blue'],  label='host sequencer (LLFT-style)')
+    ax.bar(x+w, hycor, w, color=PAL['red'],   label='order-log (HyCoR-style)')
     ax.set_xticks(x); ax.set_xticklabels([f'{p}' for p in prod])
     ax.set_xlabel('concurrent producers')
     ax.set_ylabel('throughput (M ops/s)')
     ax.set_ylim(0, 14)
     ax.legend(loc='upper left', fontsize=7.3)
-    ax.annotate('1.5–2.2× vs HyCoR\n(no order-log)', xy=(3-w, 7.89), xytext=(1.3, 12.6),
+    ax.annotate('1.5–2.2× vs order-log\n(HyCoR-style)', xy=(3+w, 7.89), xytext=(1.5, 12.6),
                 fontsize=7.3, color=PAL['green'],
                 arrowprops=dict(arrowstyle='->', color=PAL['green'], lw=0.9))
     ax.grid(axis='x', visible=False)
@@ -213,8 +218,11 @@ def fig_softroce():
     bars = ax.bar(labels, vals, color=[PAL['green'], PAL['gray']], width=0.5)
     for b, v in zip(bars, vals):
         ax.text(b.get_x()+b.get_width()/2, v+0.3, f'{v:.2f} µs', ha='center', fontsize=8)
+    ax.text(0, 2.35, 'in band', ha='center', va='bottom', fontsize=7.2, color=PAL['green'])
+    ax.text(0.52, 8.5, 'above band:\nSoftRoCE is\nCPU-bound', ha='center', va='center',
+            fontsize=7.2, color=PAL['dark'])
     ax.set_ylabel('latency (µs)')
-    ax.set_yscale('log'); ax.set_ylim(0.8, 20)
+    ax.set_yscale('log'); ax.set_ylim(0.8, 26)
     ax.legend(loc='upper left', fontsize=7.6)
     ax.set_title('Real ibverbs over SoftRoCE', fontsize=9.2)
     ax.grid(axis='x', visible=False)

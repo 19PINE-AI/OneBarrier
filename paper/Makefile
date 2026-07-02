@@ -15,6 +15,7 @@ $P.pdf  : $(wildcard *.tex *.bib figures/*)
 	bibtex $P
 	pdflatex --shell-escape $P
 	pdflatex --shell-escape $P
+	pdflatex --shell-escape $P
 
 $P.ps	: $P.dvi
 	dvips -tletter -Ppdf $P.dvi -o $P.ps

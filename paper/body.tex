@@ -87,9 +87,9 @@ persistence across correlated power loss (the FaRM/RAMCloud tradeoff~\cite{drago
   (\S\ref{sec:overview}, \S\ref{sec:eval-overlap}).
 \item An end-to-end evaluation on stock binaries (byte-identical recovery, linearizability
   and exactly-once under crashes, bounded recovery time and overhead, resource cost against
-  HyCoR, LLFT, active state-machine replication (SMR), and CRIU), carried by an explicit
-  fit-test to ten further applications across five classes (\S\ref{sec:eval},
-  \S\ref{sec:ext}).
+  same-engine HyCoR-style and LLFT-style mechanism baselines, active state-machine
+  replication (SMR), and CRIU), carried by an explicit fit-test to ten further applications
+  across five classes (\S\ref{sec:eval}, \S\ref{sec:ext}).
 \item Machine-checked TLA+ specifications of 1Pipe total order and of OneBarrier's
   exactly-once recovery, and a candid novelty reckoning (\S\ref{sec:impl},
   \S\ref{sec:novelty}).
@@ -214,7 +214,7 @@ fabric already does.
 
 The fabric supplies order; the libOS must supply everything else an \emph{unmodified} binary
 needs to replay deterministically. It is three composable \texttt{LD\_PRELOAD} libraries
-totalling $\sim$900 lines of C, in the SocksDirect~\cite{li2019socksdirect} kernel-bypass
+totalling $\sim$1{,}000 lines of C, in the SocksDirect~\cite{li2019socksdirect} kernel-bypass
 lineage, with no kernel module and no application change.
 
 \subsection{The determinism boundary}
@@ -502,8 +502,8 @@ which cannot.
 \toprule
 tier & delivery p50 & marginal durable p50 & commit p50 \\
 \midrule
-in-fabric (rides barrier) & $2014\,\mu s$ & \textbf{$4.59\,\mu s$} & $2018\,\mu s$ \\
-fsync (serial storage)    & $3042\,\mu s$ & \textbf{$2963\,\mu s$} & $6016\,\mu s$ \\
+in-fabric (rides barrier) & $2014\,\mu s$ & $\boldsymbol{4.59\,\mu s}$ & $2018\,\mu s$ \\
+fsync (serial storage)    & $3042\,\mu s$ & $\boldsymbol{2963\,\mu s}$ & $6016\,\mu s$ \\
 \bottomrule
 \end{tabular}
 \caption{With in-fabric durability the marginal FT cost is $0.23\%$ of the delivery latency: the
@@ -520,7 +520,7 @@ loopback baseline is itself millisecond-scale, so what it establishes is the \em
 stack. That this carries to the microsecond operating point follows by construction (\S\ref{sec:overview})
 and is corroborated two ways: a discrete-event model at 1Pipe's parameters, whose FT-overlap tail is
 indistinguishable from the reliable-fabric baseline at every load (Figure~\ref{fig:loadsweep}), and real
-RDMA verbs whose per-op latency sits in the assumed band (Appendix~\ref{app:model}). Only a hardware
+RDMA verbs whose one-sided-write latency sits in the assumed band (Appendix~\ref{app:model}). Only a hardware
 RDMA/P4 testbed would put a direct number on the avoided cost; the coincidence does not depend on one.
 
 \begin{figure}[tb]
@@ -541,28 +541,33 @@ barrier while out-of-regime serial durability ($\sim$100\,\textmu s) stacks.}
 \caption{Load sweep at the RDMA operating point (discrete-event model, \texttt{ob-sim}). (a) p99.9 commit
 latency vs.\ offered throughput: the FT-overlap tier (durability rides the commit barrier) is
 \emph{coincident} with the reliable-1Pipe baseline across the entire load range and into the p99.9 tail, so
-FT is marginal-cost-$\approx$0 at \emph{every} load up to the apply-bound knee. (b) The serial-fsync tier
-never enters the microsecond regime: its throughput ceiling is fsync-bound, a $\sim$$6000\times$ collapse,
-the output-hold failure mode that sank Remus quantified across load.}
+FT is marginal-cost-$\approx$0 at \emph{every} load up to the apply-bound knee. (b) The serial-durability
+tier never enters the microsecond regime: its ceiling is set by the $\sim$100\,\textmu s out-of-regime
+serial storage write (Table~\ref{tab:model}), a $200\times$ collapse below the apply-bound ceiling, the
+output-hold failure mode that sank Remus quantified across load. (At the loopback operating point the
+same tier is bound by the measured $\sim$3\,ms fsync, a $\sim$$6000\times$ collapse; Appendix~\ref{app:model}.)}
 \label{fig:loadsweep}
 \end{figure}
 
 \subsection{Resource cost against prior transparent systems}
 \label{sec:eval-compete}
 The fabric removes two mechanisms prior transparent systems pay for, and the savings show up head-to-head.
-Against HyCoR, OneBarrier writes no order-log, so it persists strictly fewer durable bytes and runs
-$1.5$--$2.2\times$ faster (Figure~\ref{fig:competitors}). Against LLFT's host sequencer (masked here by
-apply work, exposed under producer contention), in-network ordering scales where a central sequencer does
-not. And because OneBarrier is \emph{passive}, log-only backups never execute the state machine, so
+The baselines are our reimplementations of those mechanisms inside the same engine, HyCoR's per-input
+order-log and LLFT's host-side sequencer, not the released systems, so the comparison isolates the cost of
+the mechanism itself with everything else held equal. Against the order-log (HyCoR-style), OneBarrier
+persists strictly fewer durable bytes and runs $1.5$--$2.2\times$ faster (Figure~\ref{fig:competitors}).
+Against the host sequencer (LLFT-style; masked here by apply work, exposed under producer contention),
+in-network ordering scales where a central sequencer does not. And because OneBarrier is \emph{passive}, log-only backups never execute the state machine, so
 aggregate execution CPU stays near a single replica's as the replication factor grows (a $49$--$83\%$
 saving), where active SMR climbs linearly (Figure~\ref{fig:resource}). Transparency need not be costly.
 
 \begin{figure}[tb]
 \centering
 \includegraphics[width=0.52\linewidth]{figures/fig_competitors.pdf}
-\caption{Head-to-head throughput against the mechanisms OneBarrier avoids: it beats HyCoR's order-log by
-$1.5$--$2.2\times$ (writing no order-log, where a deterministic test confirms HyCoR persists strictly more
-durable bytes). LLFT's host sequencer is masked by apply work here and isolated in the sequencer-vs-fabric
+\caption{Head-to-head throughput against same-engine reimplementations of the mechanisms OneBarrier
+avoids (not the released systems): it beats the HyCoR-style order-log by $1.5$--$2.2\times$ (writing no
+order-log, where a deterministic test confirms the order-log tier persists strictly more durable bytes).
+The LLFT-style host sequencer is masked by apply work here and isolated in the sequencer-vs-fabric
 scaling result (1Pipe measures the in-network advantage at $2$--$20\times$ on hardware).}
 \label{fig:competitors}
 \end{figure}
@@ -644,7 +649,7 @@ LLFT~\cite{zhao2013llft} already did transparent no-order-log FT (we merely swap
 its order source), and the fabric is a network, not stable storage.
 
 \begin{table}[tb]\centering\small
-\begin{tabular}{p{0.185\linewidth}p{0.33\linewidth}p{0.38\linewidth}}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.185\linewidth}>{\raggedright\arraybackslash}p{0.33\linewidth}>{\raggedright\arraybackslash}p{0.38\linewidth}}
 \toprule
 prior & what it already did & gap OneBarrier owns \\
 \midrule
@@ -799,8 +804,11 @@ out-of-regime point instead places a serial storage write \emph{after} the barri
 Each request traverses four stages (order assignment, the reliable-delivery barrier, the recovery-log
 scatter present only under FT, and commit/release), with service times from Table~\ref{tab:model}. Across
 the sweep, OneBarrier's commit-latency distribution is indistinguishable from the baseline at every
-$\lambda$ because the scatter completes inside the barrier; the serial-durability point stacks and its tail
-diverges as load rises (Figure~\ref{fig:loadsweep}, body).
+$\lambda$ because the scatter completes inside the barrier; the serial-durability tier stacks its
+$\sim$100\,\textmu s write on the executor and is throughput-capped two orders of magnitude below the
+apply-bound ceiling (Figure~\ref{fig:loadsweep}b, body). The loopback calibration below uses the
+\emph{measured} $\sim$3\,ms fsync instead of the 100\,\textmu s out-of-regime value, which is why its
+collapse is $\sim$$6000\times$ rather than $200\times$.
 
 \paragraph{Calibration against the real engine.} So the projection rests on a model checked where we
 \emph{can} measure, \texttt{ob-calibrate} feeds the simulator the engine's measured loopback latencies. At
@@ -812,16 +820,18 @@ and diverges past $\sim$$370$\,ops/s, the predicted knee reproduced on real soft
 latencies are substituted.
 
 \paragraph{Real RDMA verbs.} Real \texttt{ibverbs} over SoftRoCE complete an \texttt{RDMA\_WRITE} in
-$\sim$1.5\,\textmu s and an RC round-trip in $\sim$11.8\,\textmu s (Figure~\ref{fig:softroce}), so the
-per-op latency sits in 1Pipe's $1$--$2\,\mu s$ operating point. SoftRoCE is CPU-bound, so it confirms the
-per-operation latency regime rather than the RTT-bound overlap, which only a P4/RDMA testbed would settle.
+$\sim$1.5\,\textmu s, squarely inside 1Pipe's $1$--$2\,\mu s$ band; the RC round-trip is
+$\sim$11.8\,\textmu s, above the band because SoftRoCE pays a CPU-bound software receive path where
+hardware RoCE does not (Figure~\ref{fig:softroce}). The verbs therefore corroborate the one-sided-write
+latency the model assumes, not the RTT-bound overlap, which only a P4/RDMA testbed would settle.
 
 \begin{figure}[h]
 \centering
 \includegraphics[width=0.6\linewidth]{figures/fig_softroce.pdf}
-\caption{Real \texttt{ibverbs} over SoftRoCE: an \texttt{RDMA\_WRITE} completes in $\sim$1.5\,\textmu s and
-an RC round-trip in $\sim$11.8\,\textmu s, in 1Pipe's $1$--$2\,\mu s$ operating point. SoftRoCE is
-CPU-bound, so it confirms the per-operation latency regime rather than the RTT-bound overlap.}
+\caption{Real \texttt{ibverbs} over SoftRoCE: an \texttt{RDMA\_WRITE} completes in $\sim$1.5\,\textmu s,
+inside 1Pipe's $1$--$2\,\mu s$ band; the RC round-trip is $\sim$11.8\,\textmu s, above the band because
+SoftRoCE is CPU-bound. The verbs corroborate the one-sided-write latency the model assumes, not the
+RTT-bound overlap.}
 \label{fig:softroce}
 \end{figure}
 
@@ -840,7 +850,8 @@ the next input; the value is correct, only the moment deferred. The vDSO is no e
 \begin{lstlisting}[style=cstyle,caption={The virtual clock: at each input event time advances by the
 \emph{real} inter-arrival delta, logged live and replayed on recovery, so every time read is
 wall-clock-faithful \emph{and} a deterministic function of the input prefix. (Over the fabric, \texttt{delta}
-is read from the message's total-order timestamp rather than measured.)},label={lst:vclock},float=h]
+is read from the message's total-order timestamp rather than measured.)},label={lst:vclock},float=h,
+basicstyle=\ttfamily\footnotesize]
 ssize_t recv(int fd, void *b, size_t n, int fl) {
   ssize_t r = real_recv(fd, b, n, fl);
   if (r > 0 && is_conn(fd)) {           // a deterministic input event:
@@ -854,7 +865,7 @@ ssize_t recv(int fd, void *b, size_t n, int fl) {
 int clock_gettime(clockid_t c, struct timespec *t) {
   long long v = base_ns + atomic_load(&ticks);  // base persisted at record
   t->tv_sec = v / 1000000000; t->tv_nsec = v % 1000000000;
-  return 0;                            // same inputs+deltas -> same wall-clock time
+  return 0;                        // same inputs+deltas -> same time
 }
 \end{lstlisting}
 
@@ -914,7 +925,7 @@ stream does not.
 \paragraph{Message brokers contest exactly-once streaming.} A broker's job, total order plus durable
 delivery, is what the fabric already provides. A stock \texttt{redis-server} used as a stream broker recovers
 its entry IDs and consumer offsets byte-identically, because a Redis stream auto-ID (\texttt{<ms>-<seq>})
-derives from the server clock the virtual clock determinizes, the streaming-log analog of the Nginx
+derives from the server clock the virtual clock determinizes, the streaming-log analogue of the Nginx
 \texttt{Date} header. The Kafka \emph{partition} model \emph{is} our share-nothing sharding, $N$
 single-thread partitions each with its own log, so a killed partition recovers byte-identically with offsets
 preserved while publish throughput scales near-linearly (Figure~\ref{fig:partscale}). Stock Mosquitto carries
@@ -925,7 +936,7 @@ the result to MQTT, recovering its retained-message store by replaying the publi
 \includegraphics[width=0.5\linewidth]{figures/fig_partition_scale.pdf}
 \caption{Kafka partition model: $N$ share-nothing single-thread partitions scale publish throughput
 near-linearly (the partitions share nothing, so there is no contention to serialize), reaching $7.9\times$ at
-$8$ partitions.}
+$8$ partitions (the $4.1\times$ point at $4$ partitions is measurement noise around linear).}
 \label{fig:partscale}
 \end{figure}
 
@@ -941,7 +952,7 @@ with the server live.
 \paragraph{Stateful network functions: FT as ordered replay.} An NF is a deterministic packet-processing
 state machine, so its flow state is recoverable by replaying the fabric-ordered packet log, the
 FTMB/Pico-Replication stateful-middlebox problem~\cite{sherry2015ftmb,rajagopalan2013pico}. A software Click
-NF of OpenClickNP~\cite{li2016clicknp} elements (a \texttt{FlowCache} table plus an L4 load-balancer), fed
+NF of ClickNP-style~\cite{li2016clicknp} elements (a \texttt{FlowCache} table plus an L4 load-balancer), fed
 packets over a socket, recovers its flow table (each flow's backend affinity \emph{and} conntrack last-seen
 timestamp) byte-identically, where a control's timestamps differ. A stateless restart cannot reconstruct
 this, which is the whole problem stateful-NF-FT exists to solve.
