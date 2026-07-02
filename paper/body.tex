@@ -94,7 +94,7 @@ is supplied by our shim. The name records the central identity: the
 output-commit hold and the network's reliable-delivery barrier are
 \emph{one barrier}.
 
-\paragraph{Evidence.} Fifteen stock applications recover
+\paragraph{Evidence.} Fifteen unmodified applications recover
 byte-identically---Redis, Memcached, Nginx, and Node.js by replay; a
 multi-process PostgreSQL by whole-process checkpoint; ten more spanning
 brokers, databases, a network function, a microservice, and
@@ -126,13 +126,11 @@ machine-checked in TLA+.
 \end{itemize}
 
 \paragraph{Assumptions.} Three assumptions bound the claim
-(\S\ref{sec:limits}). Durability means surviving the fail-stop crash of
-$f<k$ in-memory replicas, not a correlated power loss---the standard trade
-of systems such as FaRM~\citep{dragojevic2014farm}. Replay applies to
-share-nothing or cleanly shardable servers; shared-everything binaries
-take a checkpoint-only path. And end-to-end exactly-once semantics
-requires clients to carry a stable identity across reconnection, which a
-closed fabric provides and an anonymous TCP client does not.
+(\S\ref{sec:limits}): durability means surviving fail-stop crashes of
+$f<k$ in-memory replicas, not correlated power loss; replay applies to
+share-nothing or cleanly shardable servers, with a checkpoint-only path
+for the rest; and end-to-end exactly-once requires the client to carry a
+stable identity across reconnection.
 
 \section{Why Transparent Fault Tolerance Has Been Expensive}
 \label{sec:why}
@@ -147,7 +145,7 @@ three interlock: weakening one strengthens the demands on the others, so
 prior systems could choose \emph{where} to pay but not \emph{whether}.
 
 Table~\ref{tab:prior} and Figure~\ref{fig:prior} organize the major
-transparent systems by which of our four conditions they satisfied. Read
+prior systems by which of our four conditions they satisfied. Read
 this way, four decades of designs form a pattern: \emph{the condition a
 system lacked is the cost it paid---or the guarantee it gave up.}
 
@@ -704,7 +702,7 @@ PostgreSQL checkpoint-restores with byte-identical data.}
 
 \paragraph{Ten further applications.} To test the fit test of
 \S\ref{sec:fittest} beyond the servers it was designed on, we routed ten
-further stock applications through it, spanning five
+further applications through it, spanning five
 classes: message brokers (Redis Streams, a Kafka-style partitioned log,
 Mosquitto MQTT), databases (SQLite under an unmodified Python process;
 MySQL/MariaDB via CRIU), a stateful network function (a Click-style flow
@@ -784,10 +782,9 @@ after the barrier (fsync)    & $3042\,\mu s$ & $\boldsymbol{+2963\,\mu s}$ & $60
 \bottomrule
 \end{tabular}
 \caption{Ride versus stack, measured on the real engine (loopback network,
-p50). With replication inside the barrier, fault tolerance adds
-$4.6\,\mu s$ of copying to the commit path. With a serial write after the
-barrier, it adds $2963\,\mu s$---the commit latency doubles and the
-executor saturates.}
+p50). Replication inside the barrier adds microseconds of copying to the
+commit path; a serial write after the barrier adds milliseconds and
+saturates the executor.}
 \label{tab:rq2}
 \end{table}
 
@@ -799,11 +796,10 @@ millisecond-scale, so dividing $4.6\,\mu s$ by it yields a flattering
 fraction ($0.2\%$) we do not lean on; what the experiment establishes is
 the \emph{structure}---ride versus stack.
 
-The magnitude at the
-microsecond operating point comes from a discrete-event model of the
-1Pipe pipeline at its published parameters ($1$--$2\,\mu s$ round trip,
+At the microsecond operating point---the 1Pipe pipeline at
+its published parameters ($1$--$2\,\mu s$ round trip,
 $\sim$$21\,\mu s$ reliable-delivery barrier, $\sim$$1.5\,\mu s$
-replication write; Appendix~\ref{app:model}): there, if the write
+replication write; Appendix~\ref{app:model})---if the write
 \emph{stacked}, it would add $\sim$$1.5\,\mu s$ to a $21\,\mu s$ path
 ($7\%$) in the best case and $\sim$$100\,\mu s$ ($5\times$) with serial
 storage---so the operating point is exactly where riding versus stacking
@@ -946,8 +942,8 @@ loss---the FaRM/RAMCloud trade~\citep{dragojevic2014farm}.
 \textbf{No automated failover.} We validate the recovery mechanism and
 inherit failure detection from the fabric, but leave primary promotion
 (view change~\citep{oki1988vr,liskov2012vrrevisited}) to a production
-layer; a primary failure therefore opens a bounded window of
-unavailability, the price of passive replication's CPU savings.
+layer; the recovery window of \S\ref{sec:membership} is the price of
+passive replication's CPU savings.
 \textbf{Shared-everything binaries.} Order-log-free replay covers
 share-nothing servers; arbitrary shared-memory multithreading falls back
 to the checkpoint-only path (\S\ref{sec:criu}).
@@ -1021,8 +1017,7 @@ rewriting. RIFL~\citep{lee2015rifl} supplies the exactly-once RPC
 discipline our output suppression adapts.
 
 \paragraph{Operating point and lineage.} The microsecond regime is set by
-RDMA systems such as FaRM~\citep{dragojevic2014farm} (whose
-in-memory-replication durability trade we adopt),
+RDMA systems such as FaRM~\citep{dragojevic2014farm},
 eRPC~\citep{kalia2019erpc}, and FastWake~\citep{li2023fastwake}; our
 user-space interposition follows
 SocksDirect~\citep{li2019socksdirect}, with kernel-bypass datapaths in the
@@ -1048,7 +1043,7 @@ and replicates each message within that barrier (\Durability) eliminates
 all three costs structurally, and a user-space shim closes the remaining
 local non-determinism (\Determinism) of unmodified binaries at
 $2$--$10\%$ overhead. On a
-fabric that meets the conditions at microsecond scale, fifteen stock
+fabric that meets the conditions at microsecond scale, fifteen unmodified
 applications---caches, web servers, brokers, databases, a network
 function---recover byte-identically, crash injection confirms linearizable
 histories and exactly-once effects, and the durable write that transparent
@@ -1088,9 +1083,9 @@ Both specifications ship with the open-source artifact.
 \section{The Discrete-Event Model and Its Calibration}
 \label{app:model}
 
-The ride-versus-stack structure is measured on the real engine
-(\S\ref{sec:eval-overlap}); this appendix documents how its magnitude at
-the microsecond operating point is modeled, calibrated, and corroborated.
+This appendix documents how the magnitude of the ride-versus-stack
+result (\S\ref{sec:eval-overlap}) at the microsecond operating point is
+modeled, calibrated, and corroborated.
 
 \paragraph{Model.} Each request traverses four stages---order assignment,
 the reliable-delivery barrier, the replication scatter (present only under
@@ -1101,7 +1096,7 @@ total-order position, so it falls within the barrier stage; the
 out-of-regime comparison point instead places a serial $100\,\mu s$
 storage write after the barrier.
 
-\begin{table}[h]\centering\small
+\begin{table}[ht]\centering\small
 \begin{tabular}{lr}
 \toprule
 model parameter (from 1Pipe~\citep{li2021onepipe}) & value \\
@@ -1140,7 +1135,7 @@ CPU-bound where hardware is not (Figure~\ref{fig:softroce}). The transfers
 corroborate the one-sided-write latency, not the end-to-end pipeline,
 which only a hardware testbed would settle.
 
-\begin{figure}[h]
+\begin{figure}[ht]
 \centering
 \includegraphics[width=0.6\linewidth]{figures/fig_softroce.pdf}
 \caption{Real RDMA transfers over SoftRoCE. The one-sided write sits
@@ -1149,8 +1144,7 @@ software and lands above it.}
 \label{fig:softroce}
 \end{figure}
 
-\paragraph{Recovery under sustained load.} A recovering replica converges
-only while replay outruns the live stream. In a closed-form catch-up model
+\paragraph{Recovery under sustained load.} In a closed-form catch-up model
 parameterized by the engine's measured replay rate, plain replay livelocks
 once the live rate reaches replay capacity, while the fabric's barrier
 hold, used as backpressure on senders, roughly doubles the live load a
@@ -1160,7 +1154,7 @@ concurrent client load is exercised separately by the crash-injection test
 of \S\ref{sec:eval-correct}; a hardware saturation sweep remains future
 work.
 
-\begin{figure}[h]
+\begin{figure}[ht]
 \centering
 \includegraphics[width=0.6\linewidth]{figures/fig_recovery_load.pdf}
 \caption{Recovery time versus sustained live load (catch-up model). Plain
@@ -1184,7 +1178,7 @@ hatch, because \texttt{LD\_PRELOAD} overrides the exported symbols.
 \begin{lstlisting}[style=cstyle,caption={The virtual clock. At each input
 event, time advances by the \emph{real} inter-arrival gap, logged live and
 replayed on recovery. Over the fabric, \texttt{delta} is derived from the
-message's total-order timestamp rather than measured.},label={lst:vclock},float=h,
+message's total-order timestamp rather than measured.},label={lst:vclock},float=ht,
 basicstyle=\ttfamily\footnotesize]
 ssize_t recv(int fd, void *b, size_t n, int fl) {
   ssize_t r = real_recv(fd, b, n, fl);
@@ -1247,7 +1241,7 @@ with offsets preserved while publish throughput scales near-linearly
 (Figure~\ref{fig:partscale}). Mosquitto carries the result to MQTT,
 recovering its retained-message store by replaying the publish stream.
 
-\begin{figure}[h]
+\begin{figure}[ht]
 \centering
 \includegraphics[width=0.5\linewidth]{figures/fig_partition_scale.pdf}
 \caption{Kafka-style partitions: $N$ share-nothing single-thread

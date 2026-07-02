@@ -106,7 +106,7 @@ the host: a user-space shim closes it for unmodified binaries at $2$--$10\%$
 overhead---virtual time, virtualized randomness, and share-nothing sharding in place of
 thread scheduling. OneBarrier realizes all four
 conditions over an in-network total-order fabric (1Pipe) with microsecond round trips.
-Fifteen stock applications---including Redis, Memcached, Nginx, Node.js, and a
+Fifteen unmodified applications---including Redis, Memcached, Nginx, Node.js, and a
 multi-process PostgreSQL---recover byte-identically, and crash injection confirms
 linearizable, exactly-once histories; the core protocols are machine-checked in TLA+. A
 durable write placed inside the barrier adds $4.6\,\mu s$ to a request; the same write
