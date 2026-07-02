@@ -102,12 +102,13 @@ all three vanish. Three concern the network: \Order (messages are delivered in o
 global sequence), \Barrier (delivery is confirmed by a commit barrier), and \Durability
 (each message is replicated to backups before its barrier completes). The fourth,
 \Determinism, falls to
-the host: a user-space shim closes it for unmodified binaries at a few percent overhead
-by virtualizing time, randomness, and thread scheduling. OneBarrier realizes all four
+the host: a user-space shim closes it for unmodified binaries at a few percent
+overhead---virtual time, virtualized randomness, and share-nothing sharding in place of
+thread scheduling. OneBarrier realizes all four
 conditions over an in-network total-order fabric (1Pipe) with microsecond round trips.
 Fifteen stock applications---including Redis, Memcached, Nginx, Node.js, and a
-multi-process PostgreSQL---recover byte-identically, with linearizable, exactly-once
-histories under crash injection; the core protocols are machine-checked in TLA+. A
+multi-process PostgreSQL---recover byte-identically, and crash injection confirms
+linearizable, exactly-once histories; the core protocols are machine-checked in TLA+. A
 durable write placed inside the barrier adds $4.6\,\mu s$ to a request; the same write
 placed after it adds three milliseconds. On a network that meets the conditions, fault
 tolerance is a property, not a tax.
