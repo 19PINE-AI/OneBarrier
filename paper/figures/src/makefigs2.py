@@ -54,10 +54,10 @@ def fig_arch():
     arrow(ax, (5.0, 7.84), (5.0, 7.52), PAL['blue'])
     arrow(ax, (5.0, 3.5), (5.0, 2.32), PAL['green'])
     # in-fabric replica callout, to the RIGHT of the fabric (no overlap)
-    box(ax, 7.6, 0.95, 2.0, 1.0, 'in-fabric replicas\n(Durability)', '#fdecea', PAL['red'], fs=7.0)
-    arrow(ax, (7.3, 1.45), (7.6, 1.45), PAL['red'], lw=1.1)
-    ax.text(8.6, 0.72, '1-RTT copy, inside the barrier', ha='center', va='top',
-            fontsize=6.6, color=PAL['red'])
+    box(ax, 7.5, 0.85, 2.35, 1.4, 'in-fabric\nreplicas\n(Durability)', '#fdecea', PAL['red'], fs=7.0)
+    arrow(ax, (7.3, 1.55), (7.5, 1.55), PAL['red'], lw=1.1)
+    ax.text(8.67, 0.62, '1-RTT copy, in barrier', ha='center', va='top',
+            fontsize=6.4, color=PAL['red'])
     fig.savefig(P('fig_arch.pdf')); plt.close(fig); print('wrote fig_arch.pdf')
 
 # ---------------------------------------------------------------------------

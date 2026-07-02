@@ -61,7 +61,7 @@ promises nothing: no ordering, no delivery confirmation, no redundancy. We
 state four explicit conditions under which all three costs disappear, prove
 each elimination as a structural property of the conditions, and demonstrate
 a system that meets them. Three conditions concern the network:
-\begin{itemize}[leftmargin=1.4em,itemsep=1pt,topsep=2pt]
+\begin{description}[leftmargin=1.4em,itemsep=1pt,topsep=2pt,font=\normalfont]
 \item[\Order:] the network delivers all messages, at all
   receivers, in a single global order, identified by a timestamp on each
   message.
@@ -72,7 +72,7 @@ a system that meets them. Three conditions concern the network:
 \item[\Durability:] each message is
   copied to backup nodes, and the copy completes no later than the message's
   commit barrier.
-\end{itemize}
+\end{description}
 Under \Order the order log vanishes, because the network itself remembers
 the order (\S\ref{sec:conditions}). Under \Order and \Barrier a consistent
 snapshot needs no coordination at all: every node independently cuts at the
@@ -83,12 +83,12 @@ waits for. Fault tolerance then adds no round trip to any request: it is a
 byproduct of guarantees the network provides for its own correctness.
 
 The fourth condition falls to the host:
-\begin{itemize}[leftmargin=1.4em,itemsep=1pt,topsep=2pt]
+\begin{description}[leftmargin=1.4em,itemsep=1pt,topsep=2pt,font=\normalfont]
 \item[\Determinism:] given the same ordered inputs,
   the server computes the same state and outputs. Real servers violate this
   locally---they read the clock, draw random numbers, and interleave
   threads.
-\end{itemize}
+\end{description}
 The bulk of our experimental work shows that \Determinism is closable
 \emph{from the outside}, for unmodified binaries, at a few percent
 overhead: a user-space
@@ -276,7 +276,7 @@ identical inputs in identical order remain identical. Our conditions
 package these classical ingredients as properties a \emph{network} can
 provide to an \emph{unmodified} application:
 
-\begin{itemize}[leftmargin=1.4em,itemsep=2pt,topsep=2pt]
+\begin{description}[leftmargin=1.4em,itemsep=2pt,topsep=2pt,font=\normalfont]
 \item[\Order:] Every message carries a timestamp drawn from one global
   order, and every receiver's messages are delivered in timestamp order.
 \item[\Barrier:] For every timestamp $T$, each host eventually learns that
@@ -290,7 +290,7 @@ provide to an \emph{unmodified} application:
 \item[\Determinism:] The application is a deterministic function of its
   ordered input sequence: same inputs, same order $\Rightarrow$ same state
   and same outputs.
-\end{itemize}
+\end{description}
 
 \Order, \Barrier, and \Durability are properties a network either has or
 lacks; \Determinism is a property
@@ -481,7 +481,7 @@ falls out of step.
 
 \begin{figure}[tb]
 \centering
-\includegraphics[width=0.50\linewidth]{figures/fig_boundary.pdf}
+\includegraphics[width=0.72\linewidth]{figures/fig_boundary.pdf}
 \caption{The determinism boundary for time. Under the wall clock, a
 background timer fires a different number of times in the original run and
 the replay, so position-indexed replay desynchronizes (left). The virtual
@@ -634,7 +634,7 @@ per-replica protocol.
 
 \begin{figure}[tb]
 \centering
-\includegraphics[width=0.58\linewidth]{figures/fig_arch.pdf}
+\includegraphics[width=0.74\linewidth]{figures/fig_arch.pdf}
 \caption{OneBarrier. An unmodified server runs over the determinism shim
 (\Determinism), which routes its sockets onto a fabric providing global
 order (\Order), a delivery commit barrier (\Barrier), and in-barrier
@@ -904,7 +904,7 @@ not the full round-trip pipeline, which only switch hardware would settle
 
 \begin{figure}[tb]
 \centering
-\includegraphics[width=0.56\linewidth]{figures/fig_overlap.pdf}
+\includegraphics[width=0.88\linewidth]{figures/fig_overlap.pdf}
 \caption{Ride versus stack. Top bars: the durable write (green) completes
 under the commit barrier the network crosses regardless, adding
 microseconds of copying. Bottom bars: placed after the barrier, the same
