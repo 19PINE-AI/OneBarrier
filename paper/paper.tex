@@ -102,7 +102,7 @@ all three vanish. Three concern the network: \Order (messages are delivered in o
 global sequence), \Barrier (delivery is confirmed by a commit barrier), and \Durability
 (each message is replicated to backups before its barrier completes). The fourth,
 \Determinism, falls to
-the host: a user-space shim closes it for unmodified binaries at a few percent
+the host: a user-space shim closes it for unmodified binaries at $2$--$10\%$
 overhead---virtual time, virtualized randomness, and share-nothing sharding in place of
 thread scheduling. OneBarrier realizes all four
 conditions over an in-network total-order fabric (1Pipe) with microsecond round trips.
