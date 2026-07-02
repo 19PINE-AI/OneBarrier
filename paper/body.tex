@@ -784,7 +784,9 @@ after the barrier (fsync)    & $3042\,\mu s$ & $\boldsymbol{+2963\,\mu s}$ & $60
 \caption{Ride versus stack, measured on the real engine (loopback network,
 p50). Replication inside the barrier adds microseconds of copying to the
 commit path; a serial write after the barrier adds milliseconds and
-saturates the executor.}
+saturates the executor. The marginal durability cost is the p50 of the
+\emph{paired per-request} difference against the no-durability baseline,
+so it does not equal a difference of the column medians.}
 \label{tab:rq2}
 \end{table}
 
