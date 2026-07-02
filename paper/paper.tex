@@ -128,11 +128,12 @@ Website: \url{https://01.me/research/OneBarrier}
 
 \begin{center}
 \includegraphics[width=0.98\linewidth]{figures/fig_headline.pdf}
-\captionof{figure}{(a) A durable write \emph{inside} the network's commit barrier
-(\Durability) adds $4.6\,\mu s$ to the p50 commit path; \emph{after} the barrier, it
-adds $2963\,\mu s$ (\S\ref{sec:eval-overlap}). (b) At 8 producers, OneBarrier outruns
-same-engine reimplementations of the order log ($1.5\times$) and the host sequencer
-(\S\ref{sec:eval-cost}).}
+\captionof{figure}{One request under transparent fault tolerance. Every prior
+transparent system stacked the durable write after the delivery-confirmation
+wait, holding the reply; OneBarrier places the copy to backups \emph{inside}
+the commit barrier the network crosses anyway (\Durability), so the reply
+leaves at the barrier. Measured on the real engine: $+4.6\,\mu s$ inside
+versus $+2963\,\mu s$ after (\S\ref{sec:eval-overlap}).}
 \label{fig:headline}
 \end{center}
 \vspace{-0.4em}
