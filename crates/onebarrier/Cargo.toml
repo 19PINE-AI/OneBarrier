@@ -5,12 +5,19 @@ edition = "2021"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 description = "Transparent passive fault tolerance as a byproduct of total-order communication (built on the 1Pipe fabric)."
+authors = ["Bojie Li <boj@19pine.ai>"]
+repository = "https://github.com/19PINE-AI/OneBarrier"
+homepage = "https://01.me/research/OneBarrier"
+readme = "../../README.md"
+keywords = ["fault-tolerance", "distributed-systems", "deterministic-replay"]
+categories = ["network-programming"]
+publish = false
 
-# OneBarrier builds on the local 1Pipe reproduction, expected as a sibling
-# checkout at ../../../1Pipe (i.e. ~/1Pipe). See docs/PLAN.md §8.
+# Pin the public 1Pipe reproduction so a fresh checkout builds without a sibling
+# repository and remains reproducible if 1Pipe's default branch changes.
 [dependencies]
-onepipe-core = { path = "../../../1Pipe/crates/1pipe-core" }
-onepipe-net = { path = "../../../1Pipe/crates/1pipe-net" }
+onepipe-core = { git = "https://github.com/bojieli/1Pipe.git", rev = "01b307861bc608f758b9297147688b84f90580c5" }
+onepipe-net = { git = "https://github.com/bojieli/1Pipe.git", rev = "01b307861bc608f758b9297147688b84f90580c5" }
 
 [dev-dependencies]
 

@@ -13,7 +13,7 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SO="$HERE/libobpreload.so"
 APP="${1:-redis}"; GAP="${2:-3}"
-NODE="$(command -v node || echo /home/ubuntu/.local/bin/node)"
+NODE="${NODE:-node}"
 
 if [ "$APP" = all ]; then
   rc=0

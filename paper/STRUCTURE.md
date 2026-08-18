@@ -74,7 +74,7 @@ realization-and-measurement preprint, ~14 pp main + appendices.
    phase-1 durability; recovery (durable prefix + state-transfer catch-up).
    [M0/M1, PLAN §4]
 
-6. **Implementation.** OneBarrier engine (Rust, on the ~/1Pipe ReliableHost
+6. **Implementation.** OneBarrier engine (Rust, on the 1Pipe `ReliableHost`
    fabric; 18 binaries, 31 tests). libOS shim (C, SocksDirect lineage). Formal
    specs: TLA+ for 1Pipe total order (3.5M states) + OneBarrier exactly-once.
    [STATUS Implementation + Formal verification]

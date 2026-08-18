@@ -121,7 +121,8 @@ app matrix or the competitor matrix until A and B are green.**
 
 - RDMA NICs (RoCEv2 or IB), ≥ 8 hosts for the core results, 32+ for scale.
 - ≥ 1 programmable switch (Tofino/TNA) for the in-network barrier; the 1Pipe P4
-  is in `~/1Pipe/p4` (needs the Intel SDE). Fallback: host-representative barrier
+  is in the [1Pipe repository](https://github.com/bojieli/1Pipe/tree/01b307861bc608f758b9297147688b84f90580c5/p4)
+  (needs the Intel SDE). Fallback: host-representative barrier
   (1Pipe §6.2.3) on commodity switches — label it.
 - PTP clock sync (1Pipe assumes ~µs skew; the repo's clock-sync layer corrects
   residual).

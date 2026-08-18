@@ -1,53 +1,75 @@
 # OneBarrier
 
 **Transparent, low-overhead fault tolerance for unmodified share-nothing
-servers — as a byproduct of total-order communication.**
+servers—as a byproduct of total-order communication.**
 
-OneBarrier routes the IPC of unmodified servers through an in-network
-total-order *reliable* fabric ([1Pipe](https://doi.org/10.1145/3452296.3472909),
-SIGCOMM '21). The fabric supplies, for free, the three things fault tolerance
-historically paid for: the message order (so deterministic replay needs **no
-order-log**), an empty-channel **uncoordinated timestamp-T snapshot** (replacing
-Chandy–Lamport), and a reliable-delivery **2PC commit barrier** that **coincides
-with the output-commit barrier** — so FT's marginal cost over the fabric baseline
-is ≈ 0 at 1Pipe's µs operating point (RDMA RTT 1–2 µs, 1-RTT replication).
+[Paper](https://arxiv.org/abs/2608.14601) ·
+[Interactive website](https://01.me/research/OneBarrier) ·
+[Results and reproduction commands](STATUS.md) ·
+[1Pipe](https://doi.org/10.1145/3452296.3472909)
 
-> **Thesis & honest scope.** This is a *co-design + operating-point +
-> measurement* result, not a new primitive: transparent passive FT, long
-> dismissed as too expensive at the millisecond scale (Remus, LLFT, HyCoR),
-> becomes essentially free at the in-network-total-order + RDMA operating point.
-> Durability is in-memory **f-of-k fail-stop** (FaRM/RAMCloud tradeoff), not
-> power-loss-safe. See [`docs/PLAN.md`](docs/PLAN.md) for the full related-work
-> analysis, narrative, and experiment plan, and [`STATUS.md`](STATUS.md) for
-> what is built and measured so far.
+OneBarrier routes the IPC of unmodified servers through the 1Pipe in-network
+total-order reliable fabric. The fabric supplies the message order, an
+empty-channel uncoordinated timestamp-*T* snapshot, and a reliable-delivery 2PC
+commit barrier. OneBarrier makes that commit barrier coincide with the
+output-commit barrier, so fault tolerance adds almost no marginal cost at
+1Pipe's microsecond operating point.
 
-## Layout
+> **Scope.** This is a research prototype and a co-design, operating-point, and
+> measurement result—not a new fault-tolerance primitive or production-ready
+> service. Durability is in-memory *f*-of-*k* fail-stop durability, not
+> power-loss-safe storage. The [paper](https://arxiv.org/abs/2608.14601) and
+> [`docs/PLAN.md`](docs/PLAN.md) give the full assumptions and related-work
+> analysis.
 
-```
-crates/onebarrier/   The OneBarrier engine: deterministic-replay state machine,
-                     durable ordered log, timestamp-T snapshot, exactly-once
-                     output suppression, crash recovery.
-docs/PLAN.md         Research plan: related work, framing, experiments (RQ1–RQ8).
-STATUS.md            Milestone tracker + reproducible results.
-```
+## Repository layout
 
-## Build & test
+| Path | Contents |
+|---|---|
+| `crates/onebarrier/` | Rust engine, protocols, recovery, benchmarks, and checkers |
+| `interpose/` | Determinism libOS and unmodified-application harnesses |
+| `spec/` | TLA+ specifications for the engine and total-order fabric |
+| `paper/` | Paper source and figure-generation inputs |
+| `website/` | Interactive React paper companion |
+| `STATUS.md` | Measured results and their reproduction commands |
 
-OneBarrier builds on the 1Pipe reproduction, expected as a sibling checkout at
-`../1Pipe` (i.e. `~/1Pipe`).
+## Quick start
+
+The core artifact requires Git, Rust 1.85 or newer, and a Linux or macOS host.
+Cargo fetches the pinned public 1Pipe dependency automatically.
 
 ```bash
-cargo test -p onebarrier          # core correctness (incl. exactly-once recovery)
-cargo run  -p onebarrier --bin ob-demo   # end-to-end snapshot+replay demo
+git clone https://github.com/19PINE-AI/OneBarrier.git
+cd OneBarrier
+cargo test --workspace --all-targets
+cargo run -p onebarrier --bin ob-demo
 ```
 
-## Status
+To build the website, use Node.js `^20.19.0` or `>=22.12.0`:
 
-Early. M0 (the replication core) is implemented and tested; the networked node
-over the live 1Pipe fabric, the application suite (Redis/Memcached/Nginx/Node/
-SQLite-class), and the RQ1–RQ8 evaluation are in progress. Numbers reported in
-`STATUS.md` come from actually running the code — none are asserted.
+```bash
+cd website
+npm ci
+npm run lint
+npm run build
+```
+
+The transparent application, RDMA, and checkpoint/restore experiments have
+additional system dependencies and, in some cases, require Linux privileges or
+specific hardware. Start with [`interpose/README.md`](interpose/README.md) and
+use [`STATUS.md`](STATUS.md) as the source of truth for commands, environments,
+and measured outputs.
+
+## Citation
+
+If you use OneBarrier, please cite:
+
+> Bojie Li. “OneBarrier: What a Network Must Provide for Transparent Fault
+> Tolerance to Be Free.” arXiv:2608.14601, 2026.
+
+Machine-readable citation metadata is available in [`CITATION.cff`](CITATION.cff).
 
 ## License
 
-Dual-licensed under MIT or Apache-2.0.
+The code is dual-licensed under the [MIT](LICENSE-MIT) or
+[Apache-2.0](LICENSE-APACHE) license, at your option.

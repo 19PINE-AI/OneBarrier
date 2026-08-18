@@ -3,8 +3,8 @@
 *Transparent, low-overhead fault tolerance for unmodified share-nothing servers,
 as a byproduct of total-order communication.*
 
-Status: living document. Last updated 2026-06-21. Built on the 1Pipe
-reproduction at `~/1Pipe` (the local fabric). This plan is deliberately
+Status: living document. Last updated 2026-06-21. Built on the public
+[1Pipe reproduction](https://github.com/bojieli/1Pipe). This plan is deliberately
 self-critical: the novelty section below records prior art that *substantially
 anticipates* the original pitch, and the contribution is reframed accordingly.
 
@@ -153,7 +153,7 @@ must quantify exactly this ms-vs-µs gap, or the objection lands.
    └──────────────┘
 ```
 
-Mechanisms (mapping to `~/1Pipe`):
+Mechanisms (mapping to the pinned 1Pipe dependency):
 - **Order / delivery / commit barrier / recovery cut** → `1pipe-net::ReliableHost`
   (`send`, `poll → Vec<Delivered>{msg_ts, sender_id, payload}`), `ReliableEndpoint`,
   the decentralized recovery-cut agreement. *Already implemented and tested.*
@@ -248,7 +248,8 @@ exact axis we claim (RQ2/RQ1). Without this, reviewers reject on §3 prior art.
   spine. If they don't separate us, reposition as a 1Pipe application paper.
 - **Simulated substrate.** 1Pipe here is a faithful reproduction over UDP/sim,
   *not* the RDMA/Tofino testbed; absolute latencies track the model, not silicon.
-  State this exactly as `~/1Pipe/docs/CLAIMS.md` does. Our RDMA-overlap claim
+  State this exactly as [1Pipe's `docs/CLAIMS.md`](https://github.com/bojieli/1Pipe/blob/01b307861bc608f758b9297147688b84f90580c5/docs/CLAIMS.md)
+  does. Our RDMA-overlap claim
   (RQ2) is therefore *modeled* unless/until real RDMA is available — label it.
 - **Durability tier confusion.** Always state f-of-k in-fabric vs disk-durable.
 - **Replay livelock at peak load.** Real; needs barrier-hold backpressure (erodes

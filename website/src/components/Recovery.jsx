@@ -229,7 +229,6 @@ export default function Recovery() {
 
             {/* live input dots + scatter + acks */}
             {Array.from({ length: N_LIVE }, (_, i) => {
-              const u = seg(t, dep(i), arr(i));
               if (t < dep(i) || t > arr(i) + 0.001) return null;
               return (
                 <circle key={i} cx={lerp(24, PRIM.x - 6, eseg(t, dep(i), arr(i)))} cy={PRIM.cy}

@@ -78,8 +78,9 @@ hand-waving about the inductive step.
 
 This models the **engine** (dedup + durable log + snapshot + crash-recovery), the
 layer where exactly-once and durable linearizability live. The **total order** the
-engine consumes is 1Pipe's, proven separately in `~/1Pipe/spec`
-(`OnePipeTotalOrder.tla`). Composed: 1Pipe gives a single total order; OneBarrier
+engine consumes is 1Pipe's, proven separately in
+[`OnePipeTotalOrder.tla`](https://github.com/bojieli/1Pipe/blob/01b307861bc608f758b9297147688b84f90580c5/spec/OnePipeTotalOrder.tla).
+Composed: 1Pipe gives a single total order; OneBarrier
 applies it exactly-once and durably. The output-commit boundary to *non-cooperating*
 peers (the `ob-jepsen` "ambiguous in-flight ops") is the documented impossibility
 edge, not modeled as recoverable.

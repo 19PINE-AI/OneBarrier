@@ -6,6 +6,8 @@ barrier into the output-commit barrier (fault tolerance at 0.23% marginal cost),
 determinism libOS, the crash/replay/exactly-once life cycle, and the paper's measured
 results and honest novelty reckoning.
 
+[Read the paper on arXiv](https://arxiv.org/abs/2608.14601).
+
 ## Structure
 
 - `ts=001` Why transparent FT never shipped — the three coupled costs
@@ -28,4 +30,5 @@ npm run build      # production build into dist/
 npm run preview    # serve the build
 ```
 
-Requires Node >= 20.19 (Vite 6). No backend; deploy `dist/` on any static host.
+Requires Node `^20.19.0` or `>=22.12.0` (Vite 6). No backend; deploy `dist/` on
+any static host.

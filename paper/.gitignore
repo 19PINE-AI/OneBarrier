@@ -5,3 +5,7 @@
 *.blg
 paper.pdf
 __pycache__/
+
+# arXiv submission products (regenerated from the tracked sources)
+abstract.txt
+onebarrier-arxiv.tar.gz

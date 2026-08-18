@@ -18,7 +18,7 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OBP="$HERE/libobpreload.so"; RNG="$HERE/librngdet.so"
-NODE="$(command -v node || echo /home/ubuntu/.local/bin/node)"
+NODE="${NODE:-node}"
 IA='~0x4000000000000000:~0x0'
 APP="${1:-all}"
 [ -f "$OBP" ] || gcc -shared -fPIC -O2 -o "$OBP" "$HERE/obpreload.c" -ldl -lpthread

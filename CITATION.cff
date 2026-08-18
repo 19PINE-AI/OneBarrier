@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use OneBarrier, please cite the paper and this software."
+title: OneBarrier
+type: software
+authors:
+  - family-names: Li
+    given-names: Bojie
+version: 0.1.0
+repository-code: "https://github.com/19PINE-AI/OneBarrier"
+url: "https://01.me/research/OneBarrier"
+license:
+  - Apache-2.0
+  - MIT
+preferred-citation:
+  type: article
+  authors:
+    - family-names: Li
+      given-names: Bojie
+  title: "OneBarrier: What a Network Must Provide for Transparent Fault Tolerance to Be Free"
+  year: 2026
+  url: "https://arxiv.org/abs/2608.14601"

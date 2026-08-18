@@ -11,7 +11,7 @@
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SO="$HERE/libobpreload.so"
-NODE="$(command -v node || echo /home/ubuntu/.local/bin/node)"
+NODE="${NODE:-node}"
 P=8095
 SRV=/tmp/ob-tsserver.js
 cat > "$SRV" <<'JS'

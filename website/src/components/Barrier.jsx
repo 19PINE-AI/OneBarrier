@@ -81,7 +81,6 @@ const X0 = 110;
 const xRTT = (r) => X0 + r * 360;      // 1.5 RTT -> 650
 const BREAK_X = 700;                    // axis break for out-of-regime serial write
 const SERIAL_X0 = 736, SERIAL_X1 = 858; // drawn extent of the ~100µs write
-const CURSOR_END = 1.0;
 
 const LANES = [
   { y: 120, name: "reliable fabric, no FT", sub: "the baseline every message pays" },

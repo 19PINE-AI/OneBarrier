@@ -18,7 +18,15 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 NF="$HERE/clicknf/ob_clicknf"
 OBP="$HERE/libobpreload.so"; RNG="$HERE/librngdet.so"
 GAP="${1:-3}"; IA='~0x4000000000000000:~0x0'
-[ -x "$NF" ] || g++ -std=c++17 -O2 -I /home/ubuntu/OpenClickNP/runtime/include "$HERE/clicknf/ob_clicknf.cpp" -o "$NF"
+OPENCLICKNP_DIR="${OPENCLICKNP_DIR:-$HERE/../../OpenClickNP}"
+if [ ! -x "$NF" ]; then
+  INCLUDE="$OPENCLICKNP_DIR/runtime/include"
+  [ -d "$INCLUDE" ] || {
+    echo "OpenClickNP headers not found at $INCLUDE; set OPENCLICKNP_DIR" >&2
+    exit 1
+  }
+  g++ -std=c++17 -O2 -I "$INCLUDE" "$HERE/clicknf/ob_clicknf.cpp" -o "$NF"
+fi
 [ -f "$OBP" ] || gcc -shared -fPIC -O2 -o "$OBP" "$HERE/obpreload.c" -ldl -lpthread
 [ -f "$RNG" ] || gcc -shared -fPIC -O2 -o "$RNG" "$HERE/rngdet.c" -ldl -lpthread -Wl,-Bstatic -latomic -Wl,-Bdynamic
 

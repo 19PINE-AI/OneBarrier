@@ -68,7 +68,9 @@ function Footer() {
           <div style={{ color: "var(--ink)" }}>OneBarrier: Transparent Fault Tolerance for Free</div>
           <div>Bojie Li · Pine AI</div>
           <div>
-            <a href="https://github.com/bojieli/OneBarrier" target="_blank" rel="noreferrer">github.com/bojieli/OneBarrier</a>
+            <a href="https://arxiv.org/abs/2608.14601" target="_blank" rel="noreferrer">arXiv:2608.14601</a>
+            {" · "}
+            <a href="https://github.com/19PINE-AI/OneBarrier" target="_blank" rel="noreferrer">github.com/19PINE-AI/OneBarrier</a>
           </div>
         </div>
         <div className="mono" style={{ textAlign: "right" }}>

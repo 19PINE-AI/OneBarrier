@@ -168,7 +168,8 @@ export default function Hero() {
           </p>
           <div className="hero-meta">
             <span>Bojie Li · Pine AI</span>
-            <a href="https://github.com/bojieli/OneBarrier" target="_blank" rel="noreferrer">code ↗</a>
+            <a href="https://arxiv.org/abs/2608.14601" target="_blank" rel="noreferrer">paper ↗</a>
+            <a href="https://github.com/19PINE-AI/OneBarrier" target="_blank" rel="noreferrer">code ↗</a>
             <a href="#reckoning">honest novelty reckoning ↓</a>
           </div>
         </motion.div>

@@ -1,8 +1,16 @@
 {
-  "name": "website",
+  "name": "onebarrier-website",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/19PINE-AI/OneBarrier.git",
+    "directory": "website"
+  },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",

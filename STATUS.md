@@ -60,7 +60,7 @@ RESULT: SQLite DB state (time- AND RNG-derived rows) byte-identical across recov
 
 **Network function — software Click NF (transparent, OpenClickNP).**
 `interpose/ob-clicknf.sh` + `interpose/clicknf/ob_clicknf.cpp` (built against
-`~/OpenClickNP/runtime/include`, the SIGCOMM'16 ClickNP lineage). A stateful L4
+`${OPENCLICKNP_DIR}/runtime/include`, the SIGCOMM'16 ClickNP lineage). A stateful L4
 load-balancer with connection tracking (OpenClickNP `FlowCache` learning table + L4LB
 hash) on the host CPU, fed packets over a socket so the virtual clock ticks per packet.
 The recovered flow table — per-flow backend **affinity** AND conntrack **last-seen**
@@ -662,7 +662,7 @@ under concurrent fault injection, on the real binary.
 
 ### Formal verification (TLA+, model-checked) — 2026-06-21
 
-- **1Pipe total order** (`~/1Pipe/spec/OnePipeTotalOrder.tla`): the barrier
+- **1Pipe total order** ([`OnePipeTotalOrder.tla`](https://github.com/bojieli/1Pipe/blob/01b307861bc608f758b9297147688b84f90580c5/spec/OnePipeTotalOrder.tla)): the barrier
   mechanism + FIFO gate proven to give one global total order + causality. TLC
   exhaustive, **3,505,634 distinct states, depth 35, no error** (Procs={1,2},
   MaxTs=3). Pushed to the open-source 1Pipe repo.

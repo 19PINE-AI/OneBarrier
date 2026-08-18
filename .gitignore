@@ -15,3 +15,9 @@ interpose/*.so
 
 # compiled Click NF binary (source is ob_clicknf.cpp)
 interpose/clicknf/ob_clicknf
+
+# locally compiled benchmark binary (source is rdma_ftbench.c)
+interpose/rdma_ftbench
+
+# local copy of the 1Pipe paper; use the DOI linked from README.md
+/1pipe.pdf

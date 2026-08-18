@@ -13,10 +13,12 @@ dependencies = [
 [[package]]
 name = "onepipe-core"
 version = "0.1.0"
+source = "git+https://github.com/bojieli/1Pipe.git?rev=01b307861bc608f758b9297147688b84f90580c5#01b307861bc608f758b9297147688b84f90580c5"
 
 [[package]]
 name = "onepipe-net"
 version = "0.1.0"
+source = "git+https://github.com/bojieli/1Pipe.git?rev=01b307861bc608f758b9297147688b84f90580c5#01b307861bc608f758b9297147688b84f90580c5"
 dependencies = [
  "onepipe-core",
  "onepipe-wire",
@@ -25,6 +27,7 @@ dependencies = [
 [[package]]
 name = "onepipe-wire"
 version = "0.1.0"
+source = "git+https://github.com/bojieli/1Pipe.git?rev=01b307861bc608f758b9297147688b84f90580c5#01b307861bc608f758b9297147688b84f90580c5"
 dependencies = [
  "onepipe-core",
 ]

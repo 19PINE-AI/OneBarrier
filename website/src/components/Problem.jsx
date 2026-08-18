@@ -4,7 +4,7 @@ function ArtOrderLog() {
   return (
     <svg viewBox="0 0 300 150" className="svg-stage">
       {/* two lanes of concurrent messages */}
-      {[46, 78].map((y, i) => (
+      {[46, 78].map((y) => (
         <line key={y} x1="18" y1={y} x2="152" y2={y} stroke="var(--hairline)" strokeWidth="1" />
       ))}
       {[
