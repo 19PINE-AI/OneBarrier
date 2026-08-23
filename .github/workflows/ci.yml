@@ -61,6 +61,26 @@ jobs:
           bash interpose/ob-recover.sh redis 3 2>&1 | tee verify.log
           grep -q 'RESULT: redis DETERMINISTIC' verify.log
 
+  figures:
+    name: Figures match their generator
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install 'matplotlib==3.10.*'
+      # The SVGs are committed so GitHub can render them, which means they can
+      # drift from the generator. Regenerate and fail if anything changed.
+      - run: python3 docs/figures/make_figures.py
+      - name: Check the committed SVGs are current
+        run: |
+          if ! git diff --quiet -- docs/figures; then
+            echo "Figures are stale. Run: python3 docs/figures/make_figures.py"
+            git diff --stat -- docs/figures
+            exit 1
+          fi
+
   scripts:
     name: Shell syntax
     runs-on: ubuntu-latest

@@ -20,6 +20,13 @@ acknowledged work and never see an effect applied twice.
 OneBarrier runs `k` replicas over a network that delivers messages in one global order
 and confirms delivery with a commit barrier.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/figures/architecture-dark.svg">
+    <img alt="Clients send into a total-order fabric providing Order, Barrier and Durability; one primary replica executes the unmodified binary over the determinism shim while two backups only append to a durable log" src="docs/figures/architecture-light.svg" width="100%">
+  </picture>
+</p>
+
 One replica executes. The others only log. Every input is scattered to the backups in a
 single round trip *inside* the barrier the network was already crossing to confirm
 delivery, so an input is durable by the time delivery is confirmed, and the reply that
@@ -78,6 +85,13 @@ the same timestamp and an empty channel is already a consistent cut. Under Barri
 Durability the output hold is free, because the durability wait ends at the same barrier
 the reply was already waiting for.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/figures/costs-dark.svg">
+    <img alt="Each of the three classical costs, paired with the conditions that remove it" src="docs/figures/costs-light.svg" width="100%">
+  </picture>
+</p>
+
 OneBarrier gets those three from [1Pipe](https://doi.org/10.1145/3452296.3472909), an
 in-network total-order fabric with microsecond round trips.
 
@@ -124,6 +138,13 @@ what costs you. Same durability, same guarantee, two placements:
 | inside the commit barrier | 4.59 µs (0.23% of delivery latency) |
 | serial `fsync` after it | 2963 µs, and throughput collapses |
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/figures/barrier-dark.svg">
+    <img alt="Two request timelines to the same scale: riding the barrier releases the reply at 2018 microseconds, stacking an fsync after it releases at 6016" src="docs/figures/barrier-light.svg" width="100%">
+  </picture>
+</p>
+
 The shape is measured on the real engine over a live fabric. The magnitude at the
 microsecond operating point rests on a calibrated model plus published 1Pipe numbers,
 since there was no RDMA testbed. It's the one major claim not measured on real hardware.
@@ -135,6 +156,13 @@ since there was no RDMA testbed. It's the one major claim not measured on real h
 | 3 | 309.5 ms | 108.7 ms | 65% |
 | 5 | 519.5 ms | 114.5 ms | 78% |
 | 7 | 729.7 ms | 123.1 ms | 83% |
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/figures/passive-dark.svg">
+    <img alt="Execution CPU against replica count: active SMR grows linearly, OneBarrier stays flat" src="docs/figures/passive-light.svg" width="100%">
+  </picture>
+</p>
 
 **Correct under crash, on a live fabric.** Three replicas and two clients over the real
 `ReliableHost` path converge to the exact expected state with no message-order log. Kill

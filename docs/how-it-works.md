@@ -22,6 +22,13 @@ It has three costs, and all three land on the critical path of a live request:
 Pay all three and transparent fault tolerance is slow. That's roughly the history of
 the field: it works, nobody ships it.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="figures/costs-dark.svg">
+    <img alt="Each of the three classical costs, paired with the conditions that remove it" src="figures/costs-light.svg" width="100%">
+  </picture>
+</p>
+
 ## Two of them belong to the network
 
 The claim in the paper is that these aren't costs of fault tolerance. They're the cost
@@ -76,6 +83,13 @@ Membership rides the fabric. Its failure detector excises a dead peer within ten
 microseconds and the survivors' commit barrier resumes over the reduced group, so the
 total order holds across the crash.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="figures/recovery-dark.svg">
+    <img alt="Recovery path: crash, load snapshot, replay log suffix in timestamp order, state transfer from a survivor, resume live delivery" src="figures/recovery-light.svg" width="100%">
+  </picture>
+</p>
+
 Passive replication is why N replicas cost about 1x the execution CPU rather than Nx:
 backups append to a log, they don't run the state machine. Measured against active SMR,
 that's 65% less CPU at 3 replicas and 83% at 7.
@@ -113,6 +127,14 @@ often:
 LIVE:   1782053569.269446 .270446 .271446 .272446 .273446 .274446
 REPLAY: 1782053569.269446 .270446 .271446 .272446 .273446 .274446   (3s real gap)
 ```
+
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="figures/vclock-dark.svg">
+    <img alt="Record/replay hands back logged clock values by position, so an extra timer read slips the cursor; a virtual clock derives time from input events instead" src="figures/vclock-light.svg" width="100%">
+  </picture>
+</p>
 
 The replayed process isn't told that three seconds passed. As far as it can tell, none
 did.
@@ -160,6 +182,13 @@ It's also faster, which I didn't expect:
 | `-t 1` | 342 k ops/s | yes, by construction |
 | `-t 4` | 821 k ops/s | no, and `detsched` collapses it |
 | 4 x `-t 1` shards | 1.0 M ops/s | yes, by construction |
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="figures/sharding-dark.svg">
+    <img alt="memcached throughput: one thread 342k, four threads 821k but nondeterministic, four single-threaded shards 1.0M and deterministic" src="figures/sharding-light.svg" width="100%">
+  </picture>
+</p>
 
 Four single-threaded shards beat one four-threaded process because shards don't contend
 for locks. Single-threaded isn't a ceiling, it's how redis, nginx workers, and sharded
