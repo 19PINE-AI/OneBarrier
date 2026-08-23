@@ -73,6 +73,9 @@ jobs:
       # The SVGs are committed so GitHub can render them, which means they can
       # drift from the generator. Regenerate and fail if anything changed.
       - run: python3 docs/figures/make_figures.py
+      # Geometry audit: nothing off-canvas, no label wider than its box, no two
+      # text elements colliding. Overlaps are invisible to a byte diff.
+      - run: python3 docs/figures/audit.py
       - name: Check the committed SVGs are current
         run: |
           if ! git diff --quiet -- docs/figures; then

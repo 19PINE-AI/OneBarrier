@@ -113,62 +113,68 @@ def save(fig, name, theme):
 
 # ---------------------------------------------------------------- 1. system --
 def fig_architecture(t):
-    fig, ax = canvas(9.2, 4.6, t)
-    ax.text(50, 97, "One replica executes. The rest only log.",
+    """Primary in the middle, a backup on each side.
+
+    The primary replicates to every backup independently. Drawing the backups
+    in a row to the right invited a left-to-right chain of arrows, which would
+    say the backups forward to each other. They don't.
+    """
+    fig, ax = canvas(9.2, 4.8, t)
+    ax.text(50, 97.5, "One replica executes. The rest only log.",
             ha="center", fontsize=10.5, color=t["fg"], fontweight="bold")
 
-    # clients
-    box(ax, 38, 85, 24, 9, "clients", t["neutral_fill"], t["muted"], fs=9,
+    box(ax, 38, 86, 24, 8.5, "clients", t["neutral_fill"], t["muted"], fs=9,
         bold=True, tcolor=t["fg"])
-    arrow(ax, (50, 85), (50, 80), t["muted"])
+    arrow(ax, (50, 86), (50, 83), t["muted"])
 
     # the fabric spans every replica it delivers to
-    box(ax, 2, 54, 96, 26, "", t["green_fill"], t["green"], lw=1.7)
-    ax.text(50, 75.5, "total-order fabric  (1Pipe)", ha="center", fontsize=10,
+    box(ax, 2, 57, 96, 26, "", t["green_fill"], t["green"], lw=1.7)
+    ax.text(50, 78.5, "total-order fabric  (1Pipe)", ha="center", fontsize=10,
             color=t["green"], fontweight="bold")
     conds = [("Order", "one global\ndelivery order"),
              ("Barrier", "commit barrier\nconfirms delivery"),
              ("Durability", "input copied to backups\nbefore its barrier completes")]
     for i, (nm, sub) in enumerate(conds):
-        titled_box(ax, 5 + i * 31, 56.5, 28, 15, nm, sub, t["bg"], t["green"],
+        titled_box(ax, 5 + i * 31, 59, 28, 15, nm, sub, t["bg"], t["green"],
                    t["fg"], tfs=8.4, bfs=6.8)
 
-    # delivery, in timestamp order, to each replica
-    for x in (19.5, 55, 84):
-        arrow(ax, (x, 54), (x, 48), t["muted"], lw=1.2)
-    ax.text(23, 51, "deliver in timestamp order", fontsize=6.8, color=t["muted"],
-            va="center", ha="left")
+    for x in (16, 50, 84):
+        arrow(ax, (x, 57), (x, 50), t["muted"], lw=1.2)
+    ax.text(50, 53.5, "deliver in timestamp order", fontsize=6.8, color=t["muted"],
+            va="center", ha="center",
+            bbox=dict(facecolor=t["bg"], edgecolor="none", pad=1.2))
 
-    # primary
-    box(ax, 3, 12, 33, 36, "", t["blue_fill"], t["blue"], lw=1.7)
-    ax.text(19.5, 44.5, "primary replica", ha="center", fontsize=9.5,
-            color=t["blue"], fontweight="bold")
-    box(ax, 5, 34.5, 29, 7.5, "unmodified server binary", t["bg"], t["blue"],
-        fs=7.8, tcolor=t["fg"])
-    box(ax, 5, 25.5, 29, 7.5, "determinism shim", t["bg"], t["purple"], fs=7.8,
-        tcolor=t["fg"])
-    box(ax, 5, 15.5, 29, 7.5, "durable ordered log + snapshot", t["orange_fill"],
-        t["orange"], fs=7.2, tcolor=t["fg"])
-    ax.text(19.5, 7.5, "executes the state machine", ha="center", fontsize=7.6,
-            color=t["blue"], fontweight="bold")
-
-    # backups
-    for i, x0 in enumerate((42, 71)):
-        box(ax, x0, 12, 26, 36, "", t["neutral_fill"], t["faint"], lw=1.4)
-        ax.text(x0 + 13, 44.5, f"backup {i+1}", ha="center", fontsize=9.5,
+    # backups either side of the primary
+    for x0, n in ((3, 1), (71, 2)):
+        box(ax, x0, 14, 26, 36, "", t["neutral_fill"], t["faint"], lw=1.4)
+        ax.text(x0 + 13, 46.5, f"backup {n}", ha="center", fontsize=9.5,
                 color=t["muted"], fontweight="bold")
-        ax.text(x0 + 13, 31, "no execution,\nno state machine", ha="center",
+        ax.text(x0 + 13, 33, "no execution,\nno state machine", ha="center",
                 fontsize=7.4, color=t["muted"], linespacing=1.5)
-        box(ax, x0 + 2, 15.5, 22, 7.5, "durable ordered log", t["orange_fill"],
+        box(ax, x0 + 2, 17.5, 22, 7.5, "durable ordered log", t["orange_fill"],
             t["orange"], fs=7.2, tcolor=t["fg"])
-        ax.text(x0 + 13, 7.5, "logs only", ha="center", fontsize=7.6, color=t["muted"])
+        ax.text(x0 + 13, 11, "logs only", ha="center", fontsize=7.6, color=t["muted"])
 
-    # in-barrier replication
-    arrow(ax, (36, 19.2), (42, 19.2), t["red"], lw=1.5)
-    arrow(ax, (68, 19.2), (71, 19.2), t["red"], lw=1.5)
-    ax.text(63, 2.5, "every input scattered to the backups in one round trip, inside the\n"
-                     "barrier the fabric already crosses.  Tolerates f < k crashes.",
-            ha="center", fontsize=7.6, color=t["red"], linespacing=1.6)
+    # primary, in the middle
+    box(ax, 34, 14, 32, 36, "", t["blue_fill"], t["blue"], lw=1.7)
+    ax.text(50, 46.5, "primary replica", ha="center", fontsize=9.5,
+            color=t["blue"], fontweight="bold")
+    box(ax, 36, 36.5, 28, 7.5, "unmodified server binary", t["bg"], t["blue"],
+        fs=7.8, tcolor=t["fg"])
+    box(ax, 36, 27.5, 28, 7.5, "determinism shim", t["bg"], t["purple"], fs=7.8,
+        tcolor=t["fg"])
+    box(ax, 36, 17.5, 28, 7.5, "durable ordered log", t["orange_fill"],
+        t["orange"], fs=7.2, tcolor=t["fg"])
+    ax.text(50, 11, "executes the state machine", ha="center", fontsize=7.6,
+            color=t["blue"], fontweight="bold")
+
+    # log to log, one arrow per backup, straight out of the primary
+    arrow(ax, (34, 21.2), (29, 21.2), t["red"], lw=1.6)
+    arrow(ax, (66, 21.2), (71, 21.2), t["red"], lw=1.6)
+    ax.text(50, 2.8, "each input goes to every backup in one round trip, inside the "
+                     "barrier the fabric already\ncrosses.  Tolerates f < k "
+                     "simultaneous crashes.",
+            ha="center", fontsize=7.6, color=t["red"], linespacing=1.4)
     return fig
 
 
@@ -302,7 +308,8 @@ def fig_vclock(t):
         c = t["red"] if not ok else t["muted"]
         box(ax, 3 + i * 9.5, 38, 8, 8, v, t["red_fill"] if not ok else t["neutral_fill"],
             c, fs=8, tcolor=t["fg"])
-        ax.text(7 + i * 9.5, 34.5, kind, ha="center", fontsize=6.4, color=c)
+        # above the boxes: the callout arrow below would otherwise run through these
+        ax.text(7 + i * 9.5, 47.6, kind, ha="center", fontsize=6.4, color=c)
     ax.annotate("cursor slips by one;\nevery value after is wrong",
                 xy=(16, 38), xytext=(20, 20), fontsize=7.4, color=t["red"],
                 ha="center", linespacing=1.5,

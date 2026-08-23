@@ -10,14 +10,14 @@ re-apply what came after. That's deterministic replay, and it's decades old.
 
 It has three costs, and all three land on the critical path of a live request:
 
-1. Recording arrival order. Two clients send at once, whichever the server handles
-   first decides the outcome, so the order has to be written down before the server
+1. Writing down the order. Two clients send at the same time, and whichever the server
+   handles first decides the outcome. So the order has to be recorded before the server
    acts on it.
-2. Coordinating a snapshot. Snapshot a distributed system at the wrong moment and you
-   capture a state that never existed, like a message received but never sent. Avoiding
-   that takes coordination.
-3. Holding replies. You can't tell a client "your money moved" and then lose the
-   record, so every reply waits on a durable write. This is the output-commit problem.
+2. Coordinating a snapshot. Snapshot several machines at the wrong moment and you capture
+   a state that never happened, like a message received but never sent. Avoiding that
+   takes a round of coordination.
+3. Holding replies. You can't tell a client "your money moved" and then lose the record,
+   so every reply waits for a safe write first. This is the output-commit problem.
 
 Pay all three and transparent fault tolerance is slow. That's roughly the history of
 the field: it works, nobody ships it.
@@ -31,23 +31,24 @@ the field: it works, nobody ships it.
 
 ## Two of them belong to the network
 
-The claim in the paper is that these aren't costs of fault tolerance. They're the cost
+The paper's claim is that these aren't costs of fault tolerance at all. They're the cost
 of running on a network that promises nothing, one that can reorder your messages and
-can drop them.
+drop them.
 
-Suppose the network guarantees three things: every receiver sees messages in one global
-order, delivery is confirmed by a commit barrier, and each message is replicated to
-backups before its barrier completes. Then:
+Now suppose the network promises three things: every machine sees messages in the same
+order, it tells you the moment a message has definitely arrived, and each message is
+copied to backups before that moment. Then:
 
-- There's nothing to record. The network *is* the order, and every replica sees the
+- There's nothing to record. The network *is* the order, and every machine sees the
   same one.
-- There's no snapshot to coordinate. With ordered delivery there's a moment when no
-  message is in flight, and an empty channel is already a consistent cut.
-- The barrier the reply is waiting on is one the network was going to cross anyway, so
-  the durable write rides inside it.
+- There's no snapshot to coordinate. With ordered delivery there's an instant when no
+  message is in flight, and that instant is already a consistent picture.
+- The moment the reply is waiting for is one the network was going to reach anyway, so
+  the copy to backups happens inside it, for free.
 
-That last one is the result. Fault tolerance stops being extra work and becomes a
-byproduct of work already happening, which is where the name comes from.
+That last one is the whole result. Fault tolerance stops being extra work and becomes a
+side effect of work already happening, which is where the name comes from: one barrier,
+doing both jobs.
 
 The measurement: a durable write inside the barrier costs 4.59 µs, the same write after
 it costs 2963 µs. Same durability, same guarantee, 645x apart on placement alone.
@@ -60,28 +61,27 @@ fabric with microsecond round trips.
 
 `k` replicas over that fabric. One executes, the rest only log.
 
-The live path, per replica: the engine takes inputs the fabric delivers in timestamp
-order, appends each to a durable ordered log, scatters it to the `k-1` backups in one
-round trip inside the barrier, applies it to the state machine, and releases the output
-only when the commit barrier passes the timestamp of the input that produced it. An
-input is durable once any survivor holds it, so the configuration tolerates `f < k`
-simultaneous fail-stop crashes.
+What each replica does with a request: take it in the order the network delivered it,
+append it to a log on disk, send it to the other `k-1` machines in one round trip inside
+the barrier, run it, and release the reply only once the barrier has passed that
+request's timestamp. A request counts as safe as soon as any surviving machine holds it,
+so any `f` of the `k` can die at once.
 
-Snapshots need no coordination. When the barrier passes a snapshot point `T`, the engine
-finishes everything at or below `T`, defers everything above it, and checkpoints. Every
-node cuts at the same timestamp independently, and that cut is consistent by
-construction.
+Snapshots need no coordination. When the barrier passes a chosen timestamp `T`, each
+machine finishes everything up to `T`, holds everything after it, and writes a
+checkpoint. They all cut at the same timestamp without talking to each other, and that
+cut is guaranteed consistent.
 
-Recovery: a replacement loads the latest snapshot, replays its log suffix in timestamp
-order with external effects disabled, fetches from a survivor any prefix it's missing,
-and resumes live delivery past the recovered cut. There's no order log to replay from,
-because the timestamps are the order. Per-client high-water marks are stored inside the
-snapshot, so any output the replayed suffix re-derives gets dropped rather than sent
-twice. That's what makes recovery exactly-once rather than merely correct.
+Recovery: the replacement loads the latest snapshot, replays the log it kept since then
+with all outgoing effects switched off, asks a survivor for anything it missed, and
+resumes taking live traffic. There's no separate order log to replay from, because the
+timestamps *are* the order. The snapshot also records how far each client got, so any
+reply the replay produces a second time is dropped instead of sent. That's what makes
+recovery exactly-once rather than just correct.
 
-Membership rides the fabric. Its failure detector excises a dead peer within tens of
-microseconds and the survivors' commit barrier resumes over the reduced group, so the
-total order holds across the crash.
+The network handles membership. It spots a dead machine within tens of microseconds and
+drops it, and the survivors carry on in the same order as before, so the crash doesn't
+break the ordering.
 
 <p align="center">
   <picture>
@@ -90,38 +90,38 @@ total order holds across the crash.
   </picture>
 </p>
 
-Passive replication is why N replicas cost about 1x the execution CPU rather than Nx:
-backups append to a log, they don't run the state machine. Measured against active SMR,
-that's 65% less CPU at 3 replicas and 83% at 7.
+Only one machine runs the program, which is why ten machines cost about as much CPU as
+one instead of ten: the backups only append to a log. Measured against the usual approach
+of running the program everywhere, that's 65% less CPU at 3 machines and 83% at 7.
 
-It's also why there's no automatic failover. Promoting a new primary is a view change,
-which fundamentally requires consensus, and that's left to a production layer. A primary
-failure opens a recovery window of unavailability, and that window is what the CPU
-savings cost.
+It's also why there's no automatic failover. Choosing a new leader needs consensus, and
+that's left to a production layer. When the primary dies there's a window where the
+service is down, and that window is what the CPU savings cost you.
 
 ## The fourth condition is the host's problem
 
 Three conditions are the network's. The fourth is determinism, and it's why this repo
-exists: feeding a program the same inputs in the same order only rebuilds its state if
-the program is a function of those inputs.
+exists: feeding a program the same requests in the same order only rebuilds its state if
+the program depends on nothing else.
 
-Servers aren't. They read the clock (redis stamps entries, nginx formats a `Date:`
-header, a microservice mints timestamped order IDs), they draw randomness (hash seeds,
-session tokens, `Math.random()`, whatever `SPOP` returns), and they let the OS pick
-which thread wins a lock. Replay the request log and the data matches but everything
-derived from those hidden inputs doesn't. That's the wall this problem keeps hitting.
+Real servers depend on plenty else. They read the clock (redis stamps entries, nginx
+writes a `Date:` header, a microservice mints timestamped order IDs). They ask for random
+numbers (hash seeds, session tokens, `Math.random()`, whatever `SPOP` picks). They let the
+operating system decide which thread wins a lock. Replay the request log and the data
+matches while everything built from those hidden inputs doesn't. That's the wall this
+problem keeps hitting.
 
 ### Time
 
-The obvious approach is record/replay: log every value the clock returned, hand them
-back in order. That works if the program reads the clock once per request. It breaks as
-soon as the program has an internal timer, like redis `serverCron` or nginx
-`ngx_time_update`, because the timer fires a different number of times during replay,
-the cursor into the log slips by one, and every value after that is wrong.
+The obvious approach is to log every value the clock returned and hand them back in
+order. That works if the program reads the clock once per request. It breaks the moment
+the program has an internal timer, like redis `serverCron` or nginx `ngx_time_update`,
+because the timer fires a different number of times during replay. You hand back the
+value meant for the next read, and every value after that is wrong too.
 
-A virtual clock has no cursor. Time is `base + ticks`, ticks advance on each input
-event, so time is a function of the inputs and it doesn't matter who reads it or how
-often:
+A virtual clock has no place to lose. Time is `base + ticks`, and ticks only move when a
+request arrives, so time depends only on the requests and it doesn't matter who reads it
+or how often:
 
 ```
 LIVE:   1782053569.269446 .270446 .271446 .272446 .273446 .274446

@@ -1,12 +1,14 @@
 # OneBarrier
 
-A fault-tolerant service keeps running when a machine crashes. Most services get there
-by being written for it: state externalized into a replicated store, or the whole
-application restructured around a replay-friendly framework.
+When a machine crashes, a fault-tolerant service keeps serving. Normally you get that by
+writing the program for it: keep the state in a replicated database, or rebuild the
+program on top of a framework that knows how to replay it. Either way, someone rewrites
+the program.
 
-OneBarrier makes unmodified server binaries fault-tolerant instead. Stock redis, nginx,
-PostgreSQL: no patch, no rebuild, no library to link, no kernel module. Clients lose no
-acknowledged work and never see an effect applied twice.
+OneBarrier rewrites nothing. You point it at a server binary you didn't write, and that
+binary survives being killed. Stock redis, nginx, PostgreSQL. No patch, no rebuild, no
+library to link, no kernel module. If a client got an answer back, that work isn't lost,
+and nothing gets done twice.
 
 [Paper](https://arxiv.org/abs/2608.14601) ·
 [Site](https://01.me/research/OneBarrier) ·
@@ -17,8 +19,9 @@ acknowledged work and never see an effect applied twice.
 
 ## The system
 
-OneBarrier runs `k` replicas over a network that delivers messages in one global order
-and confirms delivery with a commit barrier.
+OneBarrier runs `k` copies of your service on a network with two unusual properties:
+every machine receives messages in the same order, and the network tells you the moment
+a message has definitely arrived. That moment is called a commit barrier.
 
 <p align="center">
   <picture>
@@ -27,22 +30,21 @@ and confirms delivery with a commit barrier.
   </picture>
 </p>
 
-One replica executes. The others only log. Every input is scattered to the backups in a
-single round trip *inside* the barrier the network was already crossing to confirm
-delivery, so an input is durable by the time delivery is confirmed, and the reply that
-was waiting on durability was waiting on that barrier anyway. Tolerates `f < k`
-simultaneous fail-stop crashes.
+One copy runs the program. The rest only write incoming requests to a log. Each request
+also goes to those backups, and that copy happens *inside* the barrier the network was
+going to cross anyway. So by the time the network confirms a request arrived, it is
+already safely on other machines, and the reply was waiting for that same instant
+regardless. Any `f` of the `k` machines can die at once.
 
-When a replica dies, the fabric's failure detector excises it within tens of
-microseconds and the survivors' barrier resumes over the reduced group, holding the
-total order across the crash. The dead replica rejoins by loading its last snapshot,
-replaying its log suffix in timestamp order, and fetching whatever prefix it missed from
-a survivor.
+When a machine dies, the network notices within tens of microseconds, drops it from the
+group, and the survivors carry on in the same order as before. The dead one rejoins
+later: load its last snapshot, replay the log it kept since then, and ask a survivor for
+whatever it missed.
 
-Only one replica executes, so N replicas cost about 1x the execution CPU instead of Nx.
-That's the argument against active state-machine replication, and it's also why there's
-no automatic failover: promoting a new primary is a view change, which needs consensus.
-See [limitations](#limitations).
+Because only one copy runs the program, ten machines cost about as much CPU as one, not
+ten. That's the main reason to prefer this over running the program everywhere. It's
+also why there's no automatic failover here: choosing a new leader needs consensus, and
+that's left to a production layer. See [limitations](#limitations).
 
 ## Why this has been expensive for forty years
 
@@ -50,40 +52,40 @@ Transparent fault tolerance has been chased since the 1980s and has never reache
 production. The obstacle was never checkpointing. It was three costs that every
 transparent system paid on the critical path of every request:
 
-**The order log.** Replay only works if inputs are re-applied in their original order,
-and on an ordinary network that order is an accident of timing. So every message's
-arrival order gets recorded first, which is the dominant overhead in deterministic-replay
+**Writing down the order.** To replay requests you have to replay them in the order they
+originally arrived. On a normal network that order is an accident of timing, so you have
+to record it before acting on anything. That recording is the biggest cost in replay-based
 systems.
 
-**The coordinated snapshot.** A distributed checkpoint has to be globally consistent: no
-node may record receiving a message that no node records sending. Chandy-Lamport
-coordinates the cut with marker messages and records in-flight channels.
+**Taking a consistent snapshot.** Snapshot several machines at once and you can capture a
+state that never really happened, like a message that was received but never sent.
+Getting it right takes a round of coordination between the machines.
 
-**The output hold.** A reply that reached a client can't be un-sent, so every visible
-output waits until the state behind it is durable. That's the output-commit problem, and
-it's what sank Remus: tens of milliseconds on every reply.
+**Holding back replies.** Once you've told a client something you can't take it back. So
+every reply waits until the state behind it is safely stored. Remus paid tens of
+milliseconds on every single reply for this.
 
-Industry took the other road and rewrote the applications, which is what Temporal, DBOS,
-Restate, and Flink are. That works one rewrite at a time, and abandons the installed base
-whose rewrite was the cost transparency existed to avoid.
+So industry went the other way and rewrote the applications. That's what Temporal, DBOS,
+Restate, and Flink are for. It works, one program at a time. But rewriting every program
+is the exact cost you were trying to avoid.
 
 ## Four conditions
 
-The paper's thesis is that these three costs aren't intrinsic to fault tolerance.
-They're the price of running over a network that promises nothing. Four conditions make
-them disappear. Three are the network's:
+The paper's argument is that these three costs have nothing to do with fault tolerance.
+They're what you pay for running on a network that promises nothing. Four conditions make
+them go away, and three of them are the network's job:
 
-| condition | meaning |
+| condition | what the network promises |
 |---|---|
-| **Order** | all messages delivered at all receivers in one global order, identified by a timestamp |
-| **Barrier** | delivery confirmed by a commit barrier: a point at which a host knows everything ordered up to `T` has landed and nothing can be lost |
-| **Durability** | each message copied to backups no later than its commit barrier |
+| **Order** | every machine receives all messages in the same order, each stamped with a timestamp |
+| **Barrier** | it tells you when everything up to timestamp `T` has arrived and nothing more can be lost |
+| **Durability** | each message is copied to backup machines before that moment |
 
-Under Order the order log vanishes, because the network remembers the order. Under Order
-and Barrier a snapshot needs no coordination, because every node independently cuts at
-the same timestamp and an empty channel is already a consistent cut. Under Barrier and
-Durability the output hold is free, because the durability wait ends at the same barrier
-the reply was already waiting for.
+With Order, there's nothing to write down, because the network already knows the order.
+With Order and Barrier, nobody has to coordinate a snapshot: every machine cuts at the
+same timestamp, and at that instant no message is in flight. With Barrier and Durability,
+holding replies costs nothing, because the wait ends at a moment the reply was waiting
+for anyway.
 
 <p align="center">
   <picture>
@@ -99,10 +101,11 @@ The fourth condition, **Determinism**, is the host's job, and it's most of the c
 
 ## Determinism, the fourth condition
 
-Replaying inputs only rebuilds state if the program is a function of its inputs, and
-real servers aren't. They read the clock, they draw randomness, and they let the OS
-decide which thread gets a lock first. None of that is in a request log, so replay gives
-you a server that agrees on the data and disagrees on everything derived from it.
+Replaying the requests only rebuilds the state if the program depends on nothing but
+those requests. Real servers depend on more. They read the clock. They ask for random
+numbers. They let the operating system decide which thread gets a lock first. None of
+that is in a request log, so a plain replay gives you a server whose data matches and
+whose timestamps, IDs, and everything derived from them don't.
 
 Three `LD_PRELOAD` libraries close that, each usable on its own, on commodity hardware
 with no fabric and no root:
@@ -113,12 +116,13 @@ with no fabric and no root:
 | `librngdet.so` | randomness | a seccomp filter traps raw `getrandom(2)` and serves a fixed stream |
 | `libdetsched.so` | threads | Kendo-style logical clocks make lock order deterministic |
 
-The clock is the interesting one. Logging clock values and handing them back in order
-works until the program reads the clock on an internal timer (redis `serverCron`, nginx
-`ngx_time_update`) rather than per request. The timer fires a different number of times
-during replay, the cursor into the log slips, and everything after it is wrong. A
-virtual clock has no cursor: time is `base + ticks` where ticks come from input events,
-so it doesn't matter who reads it or how often.
+The clock is the interesting one. The obvious fix is to write down every value the clock
+returned and hand them back in the same order. That works until the program reads the
+clock on its own internal timer instead of once per request, which redis and nginx both
+do. The timer fires a different number of times during replay, so you hand back the wrong
+value, and every value after that is wrong too. A virtual clock has no place to lose:
+time is just `base + ticks`, and ticks only move when a request arrives, so it doesn't
+matter who reads the clock or how often.
 
 Threads are the ugly case, and the measurement changed my recommendation. Forcing
 deterministic lock order costs over 1000x on a contended server. So don't do that. Run N
@@ -145,9 +149,10 @@ what costs you. Same durability, same guarantee, two placements:
   </picture>
 </p>
 
-The shape is measured on the real engine over a live fabric. The magnitude at the
-microsecond operating point rests on a calibrated model plus published 1Pipe numbers,
-since there was no RDMA testbed. It's the one major claim not measured on real hardware.
+The gap between the two is measured on the real engine over a live network. How big it
+gets at microsecond speeds comes from a calibrated model plus published 1Pipe numbers,
+because there was no RDMA hardware to test on. It's the one major claim not measured on
+real hardware.
 
 **Passive costs 1x execution CPU, active costs Nx.** Only one replica executes:
 
@@ -165,9 +170,9 @@ since there was no RDMA testbed. It's the one major claim not measured on real h
 </p>
 
 **Correct under crash, on a live fabric.** Three replicas and two clients over the real
-`ReliableHost` path converge to the exact expected state with no message-order log. Kill
-a replica mid-stream and the survivors still reach it, while the victim recovers its
-durable prefix and state-transfers to catch up. Holds at 3, 5, 7, and 9 replicas. Crash
+`ReliableHost` path converge to exactly the expected state with no order log. Kill a
+replica mid-stream and the survivors still get there, while the dead one recovers what it
+had saved and asks a survivor for the rest. Holds at 3, 5, 7, and 9 replicas. Crash
 injection with real `kill -9` gives linearizable exactly-once histories, and the engine
 protocols are model-checked in TLA+ (3.5M states, no violation).
 
@@ -228,32 +233,36 @@ loopback-UDP fabric, including the convergence and replica-crash tests above.
 
 ## Limitations
 
-**No automated failover.** The recovery mechanism is validated and failure detection is
-inherited from the fabric, but primary promotion is a view change, which needs consensus,
-and it's left to a production layer. A primary failure opens a recovery window of
-unavailability. That window is the price of passive replication's CPU savings.
+**No automatic failover.** Recovery works and the network detects failures, but nothing
+here chooses a new leader when the primary dies. That needs consensus and is left to a
+production layer, so a primary crash means a window where the service is down. That
+window is what the CPU savings cost you.
 
-**No switch or RDMA testbed.** The ride-versus-stack structure is measured on the real
-engine; its magnitude at the microsecond operating point rests on a calibrated model and
-published 1Pipe numbers. It's the one major claim not measured on real artifacts.
+**No switch or RDMA hardware to test on.** The difference between riding the barrier and
+stacking after it is measured on the real engine. How large it gets at microsecond speeds
+comes from a calibrated model and published 1Pipe numbers. It's the one major claim not
+measured on real hardware.
 
-**Durability is in-memory.** Replication tolerating `f < k` fail-stop crashes, not
-persistence across correlated power loss. Same tradeoff as FaRM and RAMCloud, and it's
-what puts the replica write inside the barrier instead of after it.
+**Durability is in memory.** Copies live on other machines' memory, so the service
+survives crashes but not a power cut that takes the whole rack down. Same tradeoff FaRM
+and RAMCloud made, and it's what lets the replica write fit inside the barrier.
 
-**Share-nothing only.** Order-log-free replay covers share-nothing servers. Arbitrary
-shared-memory multithreading falls back to the checkpoint-only CRIU path, which is how
-PostgreSQL and MariaDB are covered. The fit test is in [docs/your-app.md](docs/your-app.md).
+**Threads that share memory don't replay.** This works on servers where each process
+keeps its own state and doesn't share it with other threads. A program whose threads share
+mutable memory falls back to snapshotting the whole process with CRIU instead, which is
+how PostgreSQL and MariaDB are covered here. The fit test is in
+[docs/your-app.md](docs/your-app.md).
 
 **Residual nondeterminism.** Two CPU instructions take no syscall and export no symbol:
 `RDRAND`, pinned per-consumer here, and `RDTSC`, unused for externally visible state by
 the fifteen applications. A fully general guarantee would trap both.
 
-**The boundary of transparency** is an impossibility, not an engineering gap. No
-transparent system can un-send an effect already delivered to an external party that
-won't cooperate in deduplication; that's the two-generals obstacle. Output commit bounds
-the inconsistency window, it can't close it. The clean wins are fabric-internal services,
-idempotent interfaces, and self-contained leaf services.
+**There's a hard limit underneath all of this**, and it's an impossibility rather than an
+engineering gap. If you've already sent something to an outside party who won't help you
+detect duplicates, no system can un-send it. That's the two-generals problem. Holding
+replies narrows the window, it can't close it. This works cleanest for services that talk
+to other services inside the same network, interfaces that are safe to retry, and
+self-contained leaf services.
 
 This is a research prototype. It works, but it isn't a production service.
 
