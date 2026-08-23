@@ -1,7 +1,7 @@
 //! `ob-sweep` — RQ8: the snapshot-interval tradeoff. Smaller interval ⇒ more
 //! snapshots (higher steady-state overhead) but fewer replay records on recovery
 //! (faster recovery); larger interval ⇒ the reverse. This is the empirical shape
-//! behind the recovery model's `I*` rule (docs/PLAN.md §7).
+//! behind the recovery model's `I*` rule (docs/research/PLAN.md §7).
 
 use onebarrier::bench::sweep_snapshot_interval;
 

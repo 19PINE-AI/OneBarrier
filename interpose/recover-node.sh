@@ -10,6 +10,9 @@
 # libobpreload.so obpreload.c -ldl -lpthread).
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ob-common.sh
+. "$HERE/ob-common.sh"
+ob_require_shims libobpreload.so || exit 1
 SO="$HERE/libobpreload.so"
 NODE="${NODE:-node}"
 P=8095

@@ -15,6 +15,9 @@
 # Kafka partition model), each deterministic by construction.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ob-common.sh
+. "$HERE/ob-common.sh"
+ob_require_shims libobpreload.so librngdet.so || exit 1
 SO="$HERE/libobpreload.so"; RNG="$HERE/librngdet.so"
 GAP="${1:-3}"; SHARDS="${2:-2}"
 IA='~0x4000000000000000:~0x0'   # disable RDRAND/RDSEED for OpenSSL (untrappable CPU instr)

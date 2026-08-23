@@ -1,4 +1,4 @@
-//! M2 — RQ2, the make-or-break measurement (docs/PLAN.md §7).
+//! M2 — RQ2, the make-or-break measurement (docs/research/PLAN.md §7).
 //!
 //! Thesis: OneBarrier's output-commit barrier coincides with 1Pipe's reliable
 //! 2PC commit barrier, so FT's marginal cost over the reliable-fabric baseline
@@ -223,7 +223,7 @@ pub struct SnapResult {
 }
 
 /// Sweep the snapshot interval and measure the steady-state-overhead vs
-/// recovery-cost tradeoff (docs/PLAN.md §7 RQ8; the recovery-model `I*` rule):
+/// recovery-cost tradeoff (docs/research/PLAN.md §7 RQ8; the recovery-model `I*` rule):
 /// small interval ⇒ more snapshots (higher steady overhead), fewer replay
 /// records (faster recovery); large interval ⇒ the reverse.
 pub fn sweep_snapshot_interval(dir: &std::path::Path, intervals: &[u64], ops: u64, keys: u64) -> Vec<SnapResult> {

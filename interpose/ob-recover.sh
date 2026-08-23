@@ -11,6 +11,9 @@
 # some sandboxes, whereas eval-backgrounding a literal command is robust.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ob-common.sh
+. "$HERE/ob-common.sh"
+ob_require_shims libobpreload.so librngdet.so || exit 1
 SO="$HERE/libobpreload.so"
 APP="${1:-redis}"; GAP="${2:-3}"
 NODE="${NODE:-node}"
@@ -99,7 +102,6 @@ JS
 esac
 
 kill_port(){ for pid in $(ss -tlnp 2>/dev/null | grep ":$1 " | grep -oP 'pid=\K[0-9]+'); do kill -9 "$pid" 2>/dev/null; done; }
-[ -f "$RNG" ] || gcc -shared -fPIC -O2 -o "$RNG" "$HERE/rngdet.c" -lpthread 2>/dev/null
 kill_port "$P1"; kill_port "$P2"; kill_port "$P3"; sleep 1; rm -f "$VB" "$VR" "$VD" "$L" "$R" "$C"
 
 # 1) LIVE — record under the virtual clock

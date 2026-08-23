@@ -8,7 +8,7 @@ over the whole state space.
 
 ## What is specified
 
-`OneBarrierEngine.tla` models the engine of `docs/PLAN.md §4` faithfully:
+`OneBarrierEngine.tla` models the engine of `docs/research/PLAN.md §4` faithfully:
 
 - a per-client **high-water mark** `hw` (the exactly-once dedup key);
 - a **durable op-log** `durLog` since the last snapshot, and a **durable snapshot**

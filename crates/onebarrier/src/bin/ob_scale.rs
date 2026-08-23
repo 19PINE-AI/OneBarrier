@@ -2,7 +2,7 @@
 //! fabric. Sweep the replica count; at each, assert all replicas converge to the
 //! exact expected state and report aggregate apply throughput. The total-order
 //! barrier is aggregated in-network, so correctness must hold and per-op overhead
-//! must stay bounded as the cluster grows (docs/PLAN.md §7 RQ6).
+//! must stay bounded as the cluster grows (docs/research/PLAN.md §7 RQ6).
 
 use std::time::{Duration, Instant};
 

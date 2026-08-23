@@ -1,5 +1,6 @@
 //! `ob-recovery` — recovery time vs load, the livelock regime, and the barrier-hold
-//! backpressure fix (docs/PAPER-PLAN.md exp #6). SIMULATED via the recovery model;
+//! backpressure fix (docs/research/PAPER-PLAN.md exp #6). SIMULATED via the
+//! recovery model;
 //! 1Pipe detection + the catch-up dynamics.
 use onebarrier::recovery::{recovery_time_us, sweep, RecoveryParams};
 fn main() {

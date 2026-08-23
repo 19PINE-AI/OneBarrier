@@ -5,7 +5,7 @@ type: software
 authors:
   - family-names: Li
     given-names: Bojie
-version: 0.1.0
+version: 0.2.0
 repository-code: "https://github.com/19PINE-AI/OneBarrier"
 url: "https://01.me/research/OneBarrier"
 license:

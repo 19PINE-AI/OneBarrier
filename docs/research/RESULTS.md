@@ -4,7 +4,7 @@ Single source of truth for *what is built* and *what is measured*. Every result
 here is reproduced by a command; nothing is asserted without running it. Updated
 as the autonomous research proceeds.
 
-## Milestones (docs/PLAN.md §8)
+## Milestones (PLAN.md §8)
 
 | ID | Milestone | State |
 |----|-----------|-------|

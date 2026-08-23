@@ -1,10 +1,10 @@
 # OneBarrier — Path to a Strong Paper
 
 The next phase: moving from a **validated reproduction** to a **top-tier
-systems paper**. Same discipline as `STATUS.md` — every claim must end up
+systems paper**. Same discipline as `RESULTS.md` — every claim must end up
 reproduced by a command on the *real* testbed; nothing asserted.
 
-Status today (see `STATUS.md`): all 8 RQs have evidence, 5/5 apps, transparent
+Status today (see `RESULTS.md`): all 8 RQs have evidence, 5/5 apps, transparent
 interception on unmodified `redis-server`, M0–M5 + Track B complete — **but
 everything load-bearing rests on the reproduction** (loopback UDP, software
 ordering, KV-on-one-engine, *modeled* competitors). This document is the plan to
@@ -16,7 +16,7 @@ fix exactly that.
 
 No real RDMA testbed is available, so the hardware experiments are done in
 **local simulation** (latency model from the 1Pipe paper) + **formal verification**
-+ **real measurement** where the sandbox allows. All reproduced in `STATUS.md`.
++ **real measurement** where the sandbox allows. All reproduced in `RESULTS.md`.
 
 | Plan item | How | Result |
 |---|---|---|
@@ -166,4 +166,4 @@ Phase 5 (scope):     multithread quiesce (#4) + edge proxy (#5) — or future wo
 
 Build toward exactly those; let the results choose the bold vs narrower paper.
 Keep the reproduce-everything discipline: each phase lands working code + real
-numbers in `STATUS.md`, pushed.
+numbers in `RESULTS.md`, pushed.

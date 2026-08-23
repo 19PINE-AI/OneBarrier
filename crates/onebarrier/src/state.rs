@@ -1,7 +1,7 @@
 //! The replicated state machine under test: a `key → bytes` store with Redis
 //! semantics — `Set` (idempotent), `Incr` (non-idempotent, parses the value as
 //! an integer), `Del`, `Get`. `Set`/`Incr` is the money microbenchmark for
-//! exactly-once output suppression on replay (docs/PLAN.md §6): a naive
+//! exactly-once output suppression on replay (docs/research/PLAN.md §6): a naive
 //! log-replay double-applies `Incr` after a crash; OneBarrier suppresses it via
 //! the per-client high-water mark carried in the durable snapshot.
 

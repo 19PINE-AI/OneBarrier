@@ -1,0 +1,263 @@
+#!/usr/bin/env bash
+# onebarrier — make an unmodified server binary crash-recoverable.
+#
+# The mechanism is three LD_PRELOAD shims and a request-stream capture. This
+# script exists so you do not have to assemble that by hand: the full stack is
+# six environment variables, a two-library preload whose ORDER matters, and
+# `setarch -R`. Getting one of them wrong usually fails silently — the loader
+# ignores a missing preload — so the incantation lives here, once, tested.
+#
+#   onebarrier doctor
+#   onebarrier run     --session NAME -- <command...>
+#   onebarrier recover --session NAME --target HOST:PORT -- <command...>
+#   onebarrier replay  --session NAME --target HOST:PORT
+#   onebarrier verify  [redis|memcached|nginx|node|all] [gap_seconds]
+#   onebarrier demo
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
+INTERPOSE="$ROOT/interpose"
+OB_INTERPOSE_DIR="$INTERPOSE"
+export OB_INTERPOSE_DIR
+# shellcheck source=../interpose/ob-common.sh
+. "$INTERPOSE/ob-common.sh"
+
+STATE_HOME="${OB_HOME:-$HOME/.onebarrier}"
+
+die()  { echo "onebarrier: $*" >&2; exit 1; }
+info() { echo "onebarrier: $*" >&2; }
+
+usage() {
+  sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  cat <<'EOF'
+
+Commands
+  doctor                    report what is installed and what each thing unlocks
+  build                     build the shims and the Rust tools
+  run                       run a command under the determinism stack, capturing input
+  recover                   start a fresh instance in the same session and replay into it
+  replay                    replay a capture into an already-running instance
+  verify                    prove determinism end to end (record, crash, gap, replay, control)
+  demo                      crash an unmodified redis and watch its state come back
+  sessions                  list recorded sessions
+
+Options
+  --session NAME            session directory under ~/.onebarrier (default: "default")
+  --target HOST:PORT        where replay reconnects
+  --no-capture              virtualize time and randomness, but record no request stream
+  --no-rng                  skip the randomness stack (no seccomp, no setarch)
+EOF
+}
+
+# ---------------------------------------------------------------- session ---
+session_dir() { echo "$STATE_HOME/$1"; }
+
+# Compose the determinism stack for a session.
+#
+# Layering, from the outside in:
+#   OB_VCLOCK          virtual clock base — time becomes a function of input events
+#   OB_VCLOCK_DELTAS   per-input inter-arrival deltas, so replay tracks wall clock
+#   OB_VRAND           deterministic getrandom(2) stream (seccomp user-notification)
+#   OB_CAPTURE         the request stream, which is what recovery replays
+#   OPENSSL_ia32cap    disable RDRAND/RDSEED — a CPU instruction no syscall trap sees
+#   setarch -R         disable ASLR, which V8 and friends fold into their seeds
+#
+# librngdet.so must precede libobpreload.so in LD_PRELOAD: the RNG shim installs
+# a seccomp filter at load time and wants to be in place first.
+build_env() {
+  local dir="$1" capture="$2" rng="$3"
+  local preload="$INTERPOSE/libobpreload.so"
+  OB_ENV=(
+    "OB_VCLOCK=$dir/vclock.base"
+    "OB_VCLOCK_DELTAS=$dir/vclock.deltas"
+  )
+  if [ "$rng" = yes ]; then
+    preload="$INTERPOSE/librngdet.so $preload"
+    OB_ENV+=("OB_VRAND=$dir/vrand.seed"
+             "OPENSSL_ia32cap=~0x4000000000000000:~0x0")
+  fi
+  [ "$capture" = yes ] && OB_ENV+=("OB_CAPTURE=$dir/capture.log")
+  OB_ENV+=("LD_PRELOAD=$preload")
+
+  OB_PREFIX=()
+  if [ "$rng" = yes ] && command -v setarch >/dev/null 2>&1; then
+    OB_PREFIX=(setarch -R)
+  elif [ "$rng" = yes ]; then
+    info "setarch not found — ASLR stays on; address-derived randomness may differ across recovery"
+  fi
+}
+
+# ------------------------------------------------------------------ doctor ---
+cmd_doctor() {
+  local missing=0
+  echo "OneBarrier dependency report"
+  echo
+  echo "  required"
+  chk() { # name  what-it-unlocks  required?
+    if command -v "$1" >/dev/null 2>&1; then
+      printf "    %-16s %s\n" "$1" "ok"
+    else
+      printf "    %-16s MISSING — %s\n" "$1" "$2"
+      [ "${3:-}" = req ] && missing=1
+    fi
+  }
+  chk gcc    "cannot build the shims; apt-get install build-essential" req
+  chk cargo  "cannot build the engine; https://rustup.rs" req
+  echo
+  echo "  recommended"
+  chk setarch "ASLR stays on — needed for byte-identical Node/V8 randomness"
+  chk ss      "the harnesses use it to find and kill listeners"
+  echo
+  echo "  applications the harnesses can exercise (install what you care about)"
+  chk redis-server "no redis demo"
+  chk redis-cli    "no redis demo"
+  chk memcached    "no memcached verification"
+  chk nginx        "no nginx verification"
+  chk node         "no Node.js verification"
+  chk curl         "no HTTP-driven verification"
+  echo
+  echo "  optional, for the heavier experiments"
+  chk criu     "no whole-process checkpoint/restore path"
+  chk ab       "no nginx throughput numbers (apache2-utils)"
+  chk redis-benchmark "no redis throughput numbers"
+  echo
+  echo "  built artifacts"
+  for so in libobpreload.so librngdet.so libdetsched.so; do
+    if [ -f "$INTERPOSE/$so" ]; then printf "    %-16s built\n" "$so"
+    else printf "    %-16s not built — run: make\n" "$so"; fi
+  done
+  if [ -x "$ROOT/target/release/ob-replay" ]; then printf "    %-16s built\n" "ob-replay"
+  else printf "    %-16s not built — run: make\n" "ob-replay"; fi
+  echo
+  if [ "$missing" = 1 ]; then
+    echo "  A required tool is missing. Install it, then re-run: onebarrier doctor"
+    return 1
+  fi
+  echo "  Ready. Try: onebarrier demo"
+}
+
+# ------------------------------------------------------------------- build ---
+cmd_build() {
+  ob_require_shims libobpreload.so librngdet.so libdetsched.so || exit 1
+  ( cd "$ROOT" && cargo build --release --workspace ) || die "cargo build failed"
+  info "built"
+}
+
+# --------------------------------------------------------------------- run ---
+cmd_run() {
+  local session=default capture=yes rng=yes
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --session) session="${2:?--session needs a name}"; shift 2 ;;
+      --no-capture) capture=no; shift ;;
+      --no-rng) rng=no; shift ;;
+      --) shift; break ;;
+      *) die "unexpected argument '$1' (put the command after --)" ;;
+    esac
+  done
+  [ $# -gt 0 ] || die "no command given; usage: onebarrier run --session NAME -- <command...>"
+
+  local shims=(libobpreload.so); [ "$rng" = yes ] && shims+=(librngdet.so)
+  ob_require_shims "${shims[@]}" || exit 1
+
+  local dir; dir="$(session_dir "$session")"
+  mkdir -p "$dir"
+  rm -f "$dir/vclock.base" "$dir/vclock.deltas" "$dir/vrand.seed" "$dir/capture.log"
+
+  build_env "$dir" "$capture" "$rng"
+  info "session '$session' recording to $dir"
+  env "${OB_ENV[@]}" "${OB_PREFIX[@]}" "$@"
+}
+
+# ----------------------------------------------------------------- recover ---
+# Start a fresh instance in the same session — same clock base, same random
+# stream — and push the captured request stream back into it. The result is a
+# process that believes no time has passed and re-derives the same state.
+cmd_recover() {
+  local session=default target="" rng=yes
+  local -a cmd=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --session) session="${2:?}"; shift 2 ;;
+      --target) target="${2:?}"; shift 2 ;;
+      --no-rng) rng=no; shift ;;
+      --) shift; cmd=("$@"); break ;;
+      *) die "unexpected argument '$1' (put the command after --)" ;;
+    esac
+  done
+  local dir; dir="$(session_dir "$session")"
+  [ -d "$dir" ] || die "no session '$session' — record one first with: onebarrier run --session $session -- <command>"
+  [ -n "$target" ] || die "--target HOST:PORT is required"
+  [ ${#cmd[@]} -gt 0 ] || die "no command given; put the fresh instance's command after --"
+
+  local shims=(libobpreload.so); [ "$rng" = yes ] && shims+=(librngdet.so)
+  ob_require_shims "${shims[@]}" || exit 1
+
+  # The replayed instance must NOT overwrite the capture it is recovering from.
+  build_env "$dir" no "$rng"
+  info "restarting under session '$session' (same clock base, same random stream)"
+  env "${OB_ENV[@]}" "${OB_PREFIX[@]}" "${cmd[@]}" &
+  local pid=$!
+
+  local host="${target%%:*}" port="${target##*:}" i
+  for i in $(seq 100); do
+    (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null && { exec 3>&- 3<&-; break; }
+    sleep 0.1
+  done
+
+  cmd_replay --session "$session" --target "$target"
+  info "recovered; instance running as pid $pid"
+  wait "$pid"
+}
+
+# ------------------------------------------------------------------ replay ---
+cmd_replay() {
+  local session=default target=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --session) session="${2:?}"; shift 2 ;;
+      --target)  target="${2:?}";  shift 2 ;;
+      *) die "unknown option '$1'" ;;
+    esac
+  done
+  local dir; dir="$(session_dir "$session")"
+  local cap="$dir/capture.log"
+  [ -f "$cap" ] || die "no capture in session '$session' (recorded with --no-capture?)"
+  [ -n "$target" ] || die "--target HOST:PORT is required"
+  local bin="$ROOT/target/release/ob-replay"
+  [ -x "$bin" ] || die "ob-replay is not built — run: make"
+  info "replaying $(wc -c <"$cap") captured bytes into $target"
+  "$bin" --capture "$cap" --target "$target"
+}
+
+# ---------------------------------------------------------------- sessions ---
+cmd_sessions() {
+  [ -d "$STATE_HOME" ] || { echo "no sessions yet (recorded under $STATE_HOME)"; return 0; }
+  local d
+  printf "%-24s %12s  %s\n" SESSION CAPTURE PATH
+  for d in "$STATE_HOME"/*/; do
+    [ -d "$d" ] || continue
+    local n; n="$(basename "$d")"
+    local sz="-"; [ -f "$d/capture.log" ] && sz="$(wc -c <"$d/capture.log") B"
+    printf "%-24s %12s  %s\n" "$n" "$sz" "$d"
+  done
+}
+
+# ------------------------------------------------------------------ verify ---
+cmd_verify() { exec bash "$INTERPOSE/ob-recover.sh" "${1:-all}" "${2:-3}"; }
+cmd_demo()   { exec bash "$INTERPOSE/demo.sh"; }
+
+# -------------------------------------------------------------------- main ---
+case "${1:-}" in
+  doctor)   shift; cmd_doctor "$@" ;;
+  build)    shift; cmd_build "$@" ;;
+  run)      shift; cmd_run "$@" ;;
+  recover)  shift; cmd_recover "$@" ;;
+  replay)   shift; cmd_replay "$@" ;;
+  sessions) shift; cmd_sessions "$@" ;;
+  verify)   shift; cmd_verify "$@" ;;
+  demo)     shift; cmd_demo "$@" ;;
+  -h|--help|help|"") usage ;;
+  *) die "unknown command '$1' (try: onebarrier help)" ;;
+esac

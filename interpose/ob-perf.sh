@@ -14,12 +14,11 @@
 # RELATIVE overhead vs the native baseline is the result.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ob-common.sh
+. "$HERE/ob-common.sh"
+ob_require_shims libobpreload.so librngdet.so libdetsched.so || exit 1
 SO="$HERE/libobpreload.so"; RNG="$HERE/librngdet.so"; DS="$HERE/libdetsched.so"
 IA='~0x4000000000000000:~0x0'
-for f in "$SO:obpreload.c" "$RNG:rngdet.c" "$DS:detsched.c"; do
-  lib=${f%%:*}; src=${f##*:}
-  [ -f "$lib" ] || gcc -shared -fPIC -O2 -o "$lib" "$HERE/$src" -ldl -lpthread
-done
 kp(){ for pid in $(ss -tlnp 2>/dev/null|grep ":$1 "|grep -oP 'pid=\K[0-9]+'); do kill -9 "$pid" 2>/dev/null; done; }
 
 echo "================================================================"

@@ -1,5 +1,5 @@
 //! `ob-sim` — RQ2 + tail latency at the RDMA operating point (simulation with the
-//! 1Pipe paper's measured latency model; docs/PAPER-PLAN.md GATE A). Single
+//! 1Pipe paper's measured latency model; docs/research/PAPER-PLAN.md GATE A). Single
 //! executor, Poisson arrivals; sweeps offered load to show FT-overlap tracks the
 //! reliable-1Pipe baseline (FT ≈ free) while serial-fsync durability collapses.
 

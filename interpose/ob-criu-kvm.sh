@@ -13,6 +13,9 @@
 # Outputs RESULT-A (redis state) and RESULT-B (virtual clock) from the guest console.
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ob-common.sh
+. "$HERE/ob-common.sh"
+ob_require_shims libobpreload.so || exit 1
 # Pick a bootable kernel image that HAS a matching /lib/modules tree (the running
 # kernel's modules may be absent; KVM can boot any installed kernel image).
 KREL=""

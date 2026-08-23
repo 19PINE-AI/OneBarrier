@@ -17,12 +17,57 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked --workspace --all-targets
 
+  shims:
+    name: Shims build clean
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # A warning here is a regression: the one intentional -Wnonnull-compare is
+      # suppressed in the Makefile with a comment explaining why.
+      - name: Build the LD_PRELOAD shims
+        run: |
+          make -C interpose 2>&1 | tee build.log
+          ! grep -q 'warning:' build.log
+      - run: test -f interpose/libobpreload.so
+      - run: test -f interpose/librngdet.so
+      - run: test -f interpose/libdetsched.so
+
+  # The path a new user actually takes. This job exists because it once broke
+  # silently: the shims are gitignored build artifacts, no script built them, and
+  # the dynamic loader ignores a missing LD_PRELOAD library without an error — so
+  # a fresh clone ran with no interposition and reported a determinism FAILURE.
+  # Nothing but an end-to-end run catches that.
+  demo:
+    name: Fresh-clone demo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install applications under test
+        run: sudo apt-get update && sudo apt-get install -y redis-server redis-tools
+      - run: sudo systemctl stop redis-server || true
+      - name: Build from a clean tree
+        run: make
+      - run: bin/onebarrier doctor
+      - name: State recovery after kill -9
+        run: |
+          set -o pipefail
+          make demo 2>&1 | tee demo.log
+          grep -q 'after replay: DBSIZE=7' demo.log
+      - name: Determinism, with a control that must differ
+        run: |
+          set -o pipefail
+          bash interpose/ob-recover.sh redis 3 2>&1 | tee verify.log
+          grep -q 'RESULT: redis DETERMINISTIC' verify.log
+
   scripts:
     name: Shell syntax
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - run: find interpose -maxdepth 1 -name '*.sh' -exec bash -n {} +
+      - run: bash -n bin/onebarrier
 
   website:
     name: Website

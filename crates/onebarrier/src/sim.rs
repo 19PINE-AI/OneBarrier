@@ -1,6 +1,7 @@
 //! Discrete-event simulation of the OneBarrier request path at the **RDMA
 //! operating point** — for the experiments that need real-hardware latencies we
-//! don't have (docs/PAPER-PLAN.md GATE A). Latency parameters are taken from the
+//! don't have (docs/research/PAPER-PLAN.md GATE A). Latency parameters are
+//! taken from the
 //! 1Pipe paper's measured testbed (RDMA RTT 1–2 µs, reliable = +1 RTT, etc.), so
 //! this is *simulation with a measured latency model*, clearly labelled — not the
 //! reproduction's loopback numbers and not silicon.

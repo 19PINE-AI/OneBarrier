@@ -11,12 +11,15 @@
 # CRIU would be the general (any-binary) checkpoint mechanism; it is unavailable in
 # this sandbox (no CAP_SYS_ADMIN / netns), so we use redis's native RDB to
 # demonstrate the same principle. The OneBarrier ENGINE quantifies the identical
-# checkpoint-vs-replay tradeoff in RQ8 (STATUS.md).
+# checkpoint-vs-replay tradeoff in RQ8 (docs/research/RESULTS.md).
 #
 # Demonstrates: checkpoint-recovery replays only the TAIL yet reconstructs state
 # byte-identical to the live run (TTLs included) and to a full-replay-from-start.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ob-common.sh
+. "$HERE/ob-common.sh"
+ob_require_shims libobpreload.so || exit 1
 OBP="$HERE/libobpreload.so"
 [ -f "$OBP" ] || gcc -shared -fPIC -O2 -o "$OBP" "$HERE/obpreload.c" -ldl -lpthread
 kp(){ for pid in $(ss -tlnp 2>/dev/null|grep ":$1 "|grep -oP 'pid=\K[0-9]+'); do kill -9 "$pid" 2>/dev/null; done; }

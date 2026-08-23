@@ -17,6 +17,9 @@
 # UNMODIFIED binary, with the libOS pinning the residual local nondeterminism.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ob-common.sh
+. "$HERE/ob-common.sh"
+ob_require_shims libobpreload.so librngdet.so || exit 1
 OBP="$HERE/libobpreload.so"; RNG="$HERE/librngdet.so"
 NODE="${NODE:-node}"
 IA='~0x4000000000000000:~0x0'

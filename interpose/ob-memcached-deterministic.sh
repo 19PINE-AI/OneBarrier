@@ -16,6 +16,9 @@
 #        memcached's LRU eviction decisions.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ob-common.sh
+. "$HERE/ob-common.sh"
+ob_require_shims libobpreload.so || exit 1
 SO="$HERE/libobpreload.so"
 [ -f "$SO" ] || gcc -shared -fPIC -O2 -o "$SO" "$HERE/obpreload.c" -ldl -lpthread
 DET="-o no_lru_crawler,no_lru_maintainer,no_hashexpand,no_slab_reassign"

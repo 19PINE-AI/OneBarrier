@@ -1,7 +1,7 @@
 //! `ob-cpu` — RQ5: execution CPU, OneBarrier passive vs active SMR. Active SMR
 //! runs the state machine on every replica (N× execution CPU); OneBarrier passive
 //! runs it once and keeps the other replicas as log-only backups, so execution
-//! CPU stays ≈ 1× regardless of replication factor (docs/PLAN.md §7 RQ5).
+//! CPU stays ≈ 1× regardless of replication factor (docs/research/PLAN.md §7 RQ5).
 
 use onebarrier::bench::bench_cpu_passive_vs_active;
 

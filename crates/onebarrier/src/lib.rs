@@ -1,9 +1,9 @@
 //! OneBarrier core — the deterministic-replay engine.
 //!
 //! Transparent passive fault tolerance as a byproduct of total-order
-//! communication. This crate is the M0 core (docs/PLAN.md §8): it consumes a
-//! **totally-ordered** op stream (in the networked node, the `Delivered` stream
-//! from `1pipe-net::ReliableHost`), applies it to a deterministic
+//! communication. This crate is the M0 core (docs/research/PLAN.md §8): it
+//! consumes a **totally-ordered** op stream (in the networked node, the
+//! `Delivered` stream from `1pipe-net::ReliableHost`), applies it to a deterministic
 //! [`StateMachine`] with **exactly-once** semantics, persists a durable ordered
 //! log + timestamp-T snapshots, and recovers by restoring the latest snapshot
 //! and replaying the log forward — *without a message-order log*, because the

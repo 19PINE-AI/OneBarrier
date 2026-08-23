@@ -1,5 +1,5 @@
 //! File-backed durable ordered log + snapshot — the **stable-storage durability
-//! tier**. RQ2 (docs/PLAN.md §7) sweeps durability tiers; the low-latency tier
+//! tier**. RQ2 (docs/research/PLAN.md §7) sweeps durability tiers; the low-latency tier
 //! is in-fabric RDMA replication ridden as 1Pipe 2PC phase-1 (1 RTT, §2.2.2 of
 //! the 1Pipe paper), which this same interface will front in M2. Here we provide
 //! the correctness-first disk tier with an `fsync` knob so the tier's cost is

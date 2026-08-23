@@ -15,6 +15,9 @@
 # is the FTMB / Pico-Replication stateful-middlebox-FT problem, solved transparently.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ob-common.sh
+. "$HERE/ob-common.sh"
+ob_require_shims libobpreload.so librngdet.so || exit 1
 NF="$HERE/clicknf/ob_clicknf"
 OBP="$HERE/libobpreload.so"; RNG="$HERE/librngdet.so"
 GAP="${1:-3}"; IA='~0x4000000000000000:~0x0'

@@ -14,6 +14,9 @@
 # bounded to the post-checkpoint tail — so end-to-end availability = restore + tail.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ob-common.sh
+. "$HERE/ob-common.sh"
+ob_require_shims libobpreload.so || exit 1
 ROOT="$(cd "$HERE/.." && pwd)"
 SO="$HERE/libobpreload.so"; REPLAY="$ROOT/target/release/ob-replay"
 [ -f "$SO" ] || gcc -shared -fPIC -O2 -o "$SO" "$HERE/obpreload.c" -ldl -lpthread

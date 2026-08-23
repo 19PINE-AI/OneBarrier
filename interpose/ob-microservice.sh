@@ -15,6 +15,9 @@
 #       crash + real gap; a no-libOS control rebuilds different ids/timestamps.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ob-common.sh
+. "$HERE/ob-common.sh"
+ob_require_shims libobpreload.so librngdet.so || exit 1
 OBP="$HERE/libobpreload.so"; RNG="$HERE/librngdet.so"; DET=/tmp/ob-det-urandom
 GAP="${1:-3}"; IA='~0x4000000000000000:~0x0'
 [ -f "$OBP" ] || gcc -shared -fPIC -O2 -o "$OBP" "$HERE/obpreload.c" -ldl -lpthread

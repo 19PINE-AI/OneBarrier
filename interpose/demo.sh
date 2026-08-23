@@ -9,6 +9,9 @@
 #   (cargo build --release -p onebarrier --bin ob-replay).
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ob-common.sh
+. "$HERE/ob-common.sh"
+ob_require_shims libobpreload.so || exit 1
 ROOT="$(cd "$HERE/.." && pwd)"
 PORT=6390
 CAP=/tmp/ob-capture.log
@@ -18,9 +21,6 @@ REPLAY="$ROOT/target/release/ob-replay"
 cleanup() { pkill -9 -f "redis-server.*$PORT" 2>/dev/null; }
 trap cleanup EXIT
 cleanup; sleep 1; rm -f "$CAP"
-
-echo "== build shim =="
-gcc -shared -fPIC -O2 -o "$SO" "$HERE/obpreload.c" -ldl -lpthread || exit 1
 
 echo "== 1. start UNMODIFIED redis-server under the obpreload shim =="
 OB_CAPTURE="$CAP" LD_PRELOAD="$SO" nohup redis-server --port $PORT --save '' --appendonly no >/tmp/r-preload.log 2>&1 &

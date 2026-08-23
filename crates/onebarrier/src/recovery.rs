@@ -1,4 +1,5 @@
-//! Recovery-cost model + the replay catch-up dynamics (docs/PAPER-PLAN.md exp #6;
+//! Recovery-cost model + the replay catch-up dynamics
+//! (docs/research/PAPER-PLAN.md exp #6;
 //! the recovery red-team's livelock regime). A recovering replica restores its
 //! snapshot then replays the durable log forward to the live cut; it converges
 //! only if its replay rate exceeds the live arrival rate (`s = R_replay/R_live`).

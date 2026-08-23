@@ -1,7 +1,7 @@
 //! `ob-baselines` — M4: transparent-FT order-establishment head-to-head.
 //! OneBarrier (fabric order, no order-log) vs LLFT (host virtual-time sequencer)
 //! vs HyCoR (per-op non-determinism logging). Same apply+append work; the delta
-//! is the ordering mechanism (docs/PLAN.md §3, §7 RQ7).
+//! is the ordering mechanism (docs/research/PLAN.md §3, §7 RQ7).
 
 use onebarrier::bench::bench_ft_baselines;
 

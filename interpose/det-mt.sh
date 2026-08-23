@@ -6,8 +6,10 @@
 # scheduler-dependent, without deadlocking on condvars or real servers.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=ob-common.sh
+. "$HERE/ob-common.sh"
+ob_require_shims libdetsched.so || exit 1
 SO="$HERE/libdetsched.so"
-[ -f "$SO" ] || gcc -shared -fPIC -O2 -o "$SO" "$HERE/detsched.c" -ldl -lpthread
 
 # --- microbenchmark: 4 threads append their id to a shared log under a mutex ---
 cat > /tmp/dmt.c <<'C'
