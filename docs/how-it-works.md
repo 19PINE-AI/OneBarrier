@@ -49,6 +49,42 @@ This needs a network that actually offers those guarantees.
 [1Pipe](https://doi.org/10.1145/3452296.3472909) is one, an in-network total-order
 fabric with microsecond round trips.
 
+## What the system actually is
+
+`k` replicas over that fabric. One executes, the rest only log.
+
+The live path, per replica: the engine takes inputs the fabric delivers in timestamp
+order, appends each to a durable ordered log, scatters it to the `k-1` backups in one
+round trip inside the barrier, applies it to the state machine, and releases the output
+only when the commit barrier passes the timestamp of the input that produced it. An
+input is durable once any survivor holds it, so the configuration tolerates `f < k`
+simultaneous fail-stop crashes.
+
+Snapshots need no coordination. When the barrier passes a snapshot point `T`, the engine
+finishes everything at or below `T`, defers everything above it, and checkpoints. Every
+node cuts at the same timestamp independently, and that cut is consistent by
+construction.
+
+Recovery: a replacement loads the latest snapshot, replays its log suffix in timestamp
+order with external effects disabled, fetches from a survivor any prefix it's missing,
+and resumes live delivery past the recovered cut. There's no order log to replay from,
+because the timestamps are the order. Per-client high-water marks are stored inside the
+snapshot, so any output the replayed suffix re-derives gets dropped rather than sent
+twice. That's what makes recovery exactly-once rather than merely correct.
+
+Membership rides the fabric. Its failure detector excises a dead peer within tens of
+microseconds and the survivors' commit barrier resumes over the reduced group, so the
+total order holds across the crash.
+
+Passive replication is why N replicas cost about 1x the execution CPU rather than Nx:
+backups append to a log, they don't run the state machine. Measured against active SMR,
+that's 65% less CPU at 3 replicas and 83% at 7.
+
+It's also why there's no automatic failover. Promoting a new primary is a view change,
+which fundamentally requires consensus, and that's left to a production layer. A primary
+failure opens a recovery window of unavailability, and that window is what the CPU
+savings cost.
+
 ## The fourth condition is the host's problem
 
 Three conditions are the network's. The fourth is determinism, and it's why this repo
@@ -130,7 +166,7 @@ for locks. Single-threaded isn't a ceiling, it's how redis, nginx workers, and s
 memcached already scale. `detsched` stays in the tree for genuinely shared mutable
 state.
 
-## Together
+## The determinism layer, end to end
 
 ```
    record                                      recover
@@ -146,16 +182,29 @@ state.
 The virtualized inputs are what make the request log sufficient. Without them the log
 rebuilds the data and nothing derived from it.
 
+In the full system the "same requests, same order" on the right is supplied by the
+fabric rather than a local capture file, and the log suffix comes from the replica's own
+durable log plus a state transfer from a survivor. The shims are the same either way,
+which is why they're usable on their own on a machine with no fabric at all.
+
 ## What it doesn't do
 
-Durability is in-memory: replication to f-of-k peers survives crashes, not power loss.
-That's the FaRM/RAMCloud tradeoff, taken on purpose, because it's what puts the durable
+No automated failover. The recovery mechanism is validated and failure detection comes
+from the fabric, but primary promotion needs consensus and is left to a production layer.
+
+Durability is in-memory: replication tolerating f < k fail-stop crashes, not power loss.
+That's the FaRM/RAMCloud tradeoff, taken on purpose, because it's what puts the replica
 write inside the barrier instead of after it.
 
 The 4.59 µs result needs the fabric. The determinism layer runs on any Linux box, the
 operating-point argument doesn't.
 
 Not every program qualifies. See [the fit test](your-app.md).
+
+And there's a hard boundary underneath all of it. No transparent system can un-send an
+effect already delivered to an external party that won't help you deduplicate it. That's
+the two-generals problem, not an engineering gap. Output commit bounds the inconsistency
+window; it can't close it.
 
 ## More
 

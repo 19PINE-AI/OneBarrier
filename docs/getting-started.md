@@ -1,6 +1,12 @@
 # Getting started
 
-Making an unmodified `redis-server` survive `kill -9`.
+Making an unmodified `redis-server` survive `kill -9` on one machine.
+
+That's the determinism layer, which is one of OneBarrier's four conditions and the only
+one that needs no special network. The replicated engine (k replicas over a total-order
+fabric, one executing and the rest logging) lives in `crates/onebarrier/` and is
+exercised by `make test`, not by the commands below. [How it works](how-it-works.md) has
+the whole picture.
 
 ## Requirements
 
@@ -135,6 +141,20 @@ first in `LD_PRELOAD`, and a library in `LD_PRELOAD` that doesn't exist is ignor
 the loader without any error at all, so a missing shim doesn't fail, it just gives you a
 run with no determinism and a confusing result at the end. The harnesses build the shims
 on demand for the same reason.
+
+## The replicated engine
+
+Everything above is single-machine. The engine that implements the paper's protocol is
+in `crates/onebarrier/`, and `make test` runs it over a live loopback-UDP fabric:
+
+```bash
+cargo test -p onebarrier cluster::          # 3 replicas converge; survivors stay correct
+cargo run --release -p onebarrier --bin ob-bench    # the 4.59 vs 2963 µs result
+cargo run --release -p onebarrier --bin ob-cpu      # passive vs active SMR CPU
+```
+
+There's no turnkey way to run a real replicated deployment here. Order, Barrier, and
+Durability come from the fabric, and OneBarrier consumes them rather than providing them.
 
 ## Next
 

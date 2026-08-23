@@ -2,6 +2,11 @@
 
 Whether OneBarrier can make your program crash-recoverable, and what to do about it.
 
+This is about the determinism condition: making your binary a function of its inputs so
+that replaying them rebuilds its state. That's what you need whether you run it
+single-machine under the shims or as a replica in the engine, so it's the first question
+either way.
+
 ## Fit test
 
 Four questions, all have to be yes.

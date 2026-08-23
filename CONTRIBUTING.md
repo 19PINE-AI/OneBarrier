@@ -33,6 +33,11 @@ output of your run.
 
 ## Other useful work
 
+On the engine (`crates/onebarrier/`): automated primary promotion is the big one. It's
+listed as a limitation because a view change needs consensus, and a production-grade
+implementation would close the recovery window that passive replication opens. Anything
+that strengthens the crash and convergence tests over the live fabric is also welcome.
+
 Closing a residual nondeterminism source. If you find an entropy channel the shims miss,
 a reproduction is worth having even without a fix.
 

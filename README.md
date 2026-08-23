@@ -1,8 +1,12 @@
 # OneBarrier
 
-Kill a server process, start it again, and it comes back byte-identical: same data,
-same timestamps, same random IDs it had already handed out. The server is unmodified.
-No patch, no rebuild, no library to link, no kernel module, no root.
+A fault-tolerant service keeps running when a machine crashes. Most services get there
+by being written for it: state externalized into a replicated store, or the whole
+application restructured around a replay-friendly framework.
+
+OneBarrier makes unmodified server binaries fault-tolerant instead. Stock redis, nginx,
+PostgreSQL: no patch, no rebuild, no library to link, no kernel module. Clients lose no
+acknowledged work and never see an effect applied twice.
 
 [Paper](https://arxiv.org/abs/2608.14601) ·
 [Site](https://01.me/research/OneBarrier) ·
@@ -11,35 +15,83 @@ No patch, no rebuild, no library to link, no kernel module, no root.
 [Your app](docs/your-app.md) ·
 [Results](docs/research/RESULTS.md)
 
-## What it does
+## The system
 
-Making a program survive a crash normally means rewriting it: add a write-ahead log,
-add checkpoints, replicate the state, then reason carefully about which replies you're
-allowed to send before which writes are durable. It's invasive, easy to get subtly
-wrong, and you do it again for every program.
+OneBarrier runs `k` replicas over a network that delivers messages in one global order
+and confirms delivery with a commit barrier.
 
-OneBarrier does it from outside the process.
+One replica executes. The others only log. Every input is scattered to the backups in a
+single round trip *inside* the barrier the network was already crossing to confirm
+delivery, so an input is durable by the time delivery is confirmed, and the reply that
+was waiting on durability was waiting on that barrier anyway. Tolerates `f < k`
+simultaneous fail-stop crashes.
 
-```bash
-onebarrier run --session app -- redis-server --port 6379
-# kill -9 it, wait as long as you want
-onebarrier recover --session app --target 127.0.0.1:6379 -- redis-server --port 6379
-```
+When a replica dies, the fabric's failure detector excises it within tens of
+microseconds and the survivors' barrier resumes over the reduced group, holding the
+total order across the crash. The dead replica rejoins by loading its last snapshot,
+replaying its log suffix in timestamp order, and fetching whatever prefix it missed from
+a survivor.
 
-Redis is never told any of this happened. After recovery, `GET` returns what it
-returned before, `INCR` counters aren't double-applied, and `TIME` reports the instant
-of the crash instead of now.
+Only one replica executes, so N replicas cost about 1x the execution CPU instead of Nx.
+That's the argument against active state-machine replication, and it's also why there's
+no automatic failover: promoting a new primary is a view change, which needs consensus.
+See [limitations](#limitations).
 
-## Why replaying requests isn't enough
+## Why this has been expensive for forty years
+
+Transparent fault tolerance has been chased since the 1980s and has never reached
+production. The obstacle was never checkpointing. It was three costs that every
+transparent system paid on the critical path of every request:
+
+**The order log.** Replay only works if inputs are re-applied in their original order,
+and on an ordinary network that order is an accident of timing. So every message's
+arrival order gets recorded first, which is the dominant overhead in deterministic-replay
+systems.
+
+**The coordinated snapshot.** A distributed checkpoint has to be globally consistent: no
+node may record receiving a message that no node records sending. Chandy-Lamport
+coordinates the cut with marker messages and records in-flight channels.
+
+**The output hold.** A reply that reached a client can't be un-sent, so every visible
+output waits until the state behind it is durable. That's the output-commit problem, and
+it's what sank Remus: tens of milliseconds on every reply.
+
+Industry took the other road and rewrote the applications, which is what Temporal, DBOS,
+Restate, and Flink are. That works one rewrite at a time, and abandons the installed base
+whose rewrite was the cost transparency existed to avoid.
+
+## Four conditions
+
+The paper's thesis is that these three costs aren't intrinsic to fault tolerance.
+They're the price of running over a network that promises nothing. Four conditions make
+them disappear. Three are the network's:
+
+| condition | meaning |
+|---|---|
+| **Order** | all messages delivered at all receivers in one global order, identified by a timestamp |
+| **Barrier** | delivery confirmed by a commit barrier: a point at which a host knows everything ordered up to `T` has landed and nothing can be lost |
+| **Durability** | each message copied to backups no later than its commit barrier |
+
+Under Order the order log vanishes, because the network remembers the order. Under Order
+and Barrier a snapshot needs no coordination, because every node independently cuts at
+the same timestamp and an empty channel is already a consistent cut. Under Barrier and
+Durability the output hold is free, because the durability wait ends at the same barrier
+the reply was already waiting for.
+
+OneBarrier gets those three from [1Pipe](https://doi.org/10.1145/3452296.3472909), an
+in-network total-order fabric with microsecond round trips.
+
+The fourth condition, **Determinism**, is the host's job, and it's most of the code here.
+
+## Determinism, the fourth condition
 
 Replaying inputs only rebuilds state if the program is a function of its inputs, and
 real servers aren't. They read the clock, they draw randomness, and they let the OS
-decide which thread gets a lock first. None of that is in a request log, so a naive
-replay gives you a server that agrees on the data and disagrees on everything derived
-from it.
+decide which thread gets a lock first. None of that is in a request log, so replay gives
+you a server that agrees on the data and disagrees on everything derived from it.
 
-OneBarrier virtualizes those three, each as a separate `LD_PRELOAD` library you can use
-on its own:
+Three `LD_PRELOAD` libraries close that, each usable on its own, on commodity hardware
+with no fabric and no root:
 
 | library | closes | how |
 |---|---|---|
@@ -55,25 +107,44 @@ virtual clock has no cursor: time is `base + ticks` where ticks come from input 
 so it doesn't matter who reads it or how often.
 
 Threads are the ugly case, and the measurement changed my recommendation. Forcing
-deterministic lock order costs over 1000x on a contended server. So don't do that. Run
-N single-threaded instances instead, which are deterministic because there's only one
+deterministic lock order costs over 1000x on a contended server. So don't do that. Run N
+single-threaded instances instead, which are deterministic because there's only one
 thread. That's also faster: 4 single-threaded memcached shards do 1.0 M ops/s against
 821 k for one `memcached -t 4`, because shards don't fight over locks.
 
 ## Numbers
 
-All of these are reproduced by a command in [docs/research/RESULTS.md](docs/research/RESULTS.md).
+All reproduced by a command in [docs/research/RESULTS.md](docs/research/RESULTS.md).
 
-The paper's main result is that where you put the durable write is what costs you. Same
-write, same guarantee, two placements:
+**Replication rides the barrier.** The main result: where you put the replica write is
+what costs you. Same durability, same guarantee, two placements:
 
-| durable write | cost per request |
+| replica write | cost per request |
 |---|---|
-| inside the network's commit barrier | 4.59 µs (0.23% of delivery latency) |
+| inside the commit barrier | 4.59 µs (0.23% of delivery latency) |
 | serial `fsync` after it | 2963 µs, and throughput collapses |
 
-A fault-tolerant Redis-protocol server against stock Redis with no persistence and no
-fault tolerance at all:
+The shape is measured on the real engine over a live fabric. The magnitude at the
+microsecond operating point rests on a calibrated model plus published 1Pipe numbers,
+since there was no RDMA testbed. It's the one major claim not measured on real hardware.
+
+**Passive costs 1x execution CPU, active costs Nx.** Only one replica executes:
+
+| replicas | active SMR | OneBarrier (passive) | saved |
+|---:|---:|---:|---:|
+| 3 | 309.5 ms | 108.7 ms | 65% |
+| 5 | 519.5 ms | 114.5 ms | 78% |
+| 7 | 729.7 ms | 123.1 ms | 83% |
+
+**Correct under crash, on a live fabric.** Three replicas and two clients over the real
+`ReliableHost` path converge to the exact expected state with no message-order log. Kill
+a replica mid-stream and the survivors still reach it, while the victim recovers its
+durable prefix and state-transfers to catch up. Holds at 3, 5, 7, and 9 replicas. Crash
+injection with real `kill -9` gives linearizable exactly-once histories, and the engine
+protocols are model-checked in TLA+ (3.5M states, no violation).
+
+**Fault tolerance is nearly free in throughput.** A fault-tolerant Redis-protocol server
+against stock Redis with no persistence and no fault tolerance at all:
 
 | | SET | GET | INCR |
 |---|---:|---:|---:|
@@ -81,53 +152,26 @@ fault tolerance at all:
 | OneBarrier, fault-tolerant | 142 248 | 188 679 | 233 100 |
 | | 59% | 77% | 98% |
 
-Recovery is linear in log length, about 1.9 M requests/s, and reconstructs the key set
-exactly:
+**Recovery is linear in log length**, about 1.9 M requests/s, reconstructing the key set
+exactly: 100 k requests in 87 ms, 1 M in 536 ms.
 
-| requests | keys recovered | time |
-|---:|---:|---:|
-| 10 k | 9 998 / 9 998 | 35 ms |
-| 100 k | 99 957 / 99 957 | 87 ms |
-| 1 M | 994 967 / 994 967 | 536 ms |
-
-Interception overhead is under 5% for nginx under realistic (non-pipelined) load, with
-p99 unchanged at 2 ms. Time and RNG virtualization are within noise.
-
-Fifteen unmodified applications recover byte-identically: redis, memcached, nginx,
+**Fifteen unmodified applications recover byte-identically**: redis, memcached, nginx,
 Node.js, PostgreSQL, MariaDB, SQLite, Redis Streams, a Kafka partition model, Mosquitto,
 dnsmasq, lighttpd, HAProxy, a Click network function, and a Python microservice. Each is
-checked against a control run without OneBarrier that has to differ, so a pass isn't
-just a test that would have passed anyway.
-
-Some of what survives a crash unchanged: nginx's `Date:` header, formatted deep inside
-nginx from its own cached clock. memcached's LRU eviction set, all 1416 survivors.
-Node's `Math.random()`. SQLite rows whose values came from SQLite's own PRNG. A load
+checked against a control run without OneBarrier that has to differ, so a pass isn't a
+test that would have passed anyway. What survives unchanged: nginx's `Date:` header,
+formatted deep inside nginx from its own cached clock; memcached's LRU eviction set, all
+1416 survivors; Node's `Math.random()`; SQLite rows built from SQLite's own PRNG; a load
 balancer's per-flow conntrack timestamps.
 
-The engine protocols are model-checked in TLA+ (3.5M states, no violation), and crash
-injection with real `kill -9` gives linearizable exactly-once histories.
-
-## The argument
-
-Transparent fault tolerance has been worked on for forty years without reaching
-production. Every attempt paid three costs on the critical path: record message arrival
-order so you can replay it, coordinate a consistent snapshot, and hold each reply until
-the state behind it is durable.
-
-The paper's claim is that these aren't costs of fault tolerance. They're the price of a
-network that guarantees neither order nor delivery. Give the network three properties
-(messages delivered in one global order, delivery confirmed by a commit barrier, each
-message replicated to backups before its barrier completes) and all three costs go away.
-There's no order to record because the network is the order. There's no snapshot to
-coordinate because an empty channel is already a consistent cut. And the barrier the
-reply was waiting for is one the network was going to cross anyway.
-
-Three of those conditions are the network's job, and OneBarrier gets them from
-[1Pipe](https://doi.org/10.1145/3452296.3472909). The fourth, determinism, is the host's
-job, and that's the `LD_PRELOAD` layer here. It costs 2-10% and needs no special
-hardware.
+Interception overhead is under 5% for nginx under realistic load, p99 unchanged at 2 ms.
+Time and RNG virtualization are within noise.
 
 ## Try it
+
+The determinism layer runs on one machine, no fabric and no special hardware. That's
+what the demo exercises: the shims plus record/replay recovery of one unmodified binary.
+It isn't the replicated system, it's the part you can run on a laptop right now.
 
 Linux, `gcc`, Rust 1.85+.
 
@@ -138,6 +182,7 @@ make
 make doctor    # tells you what else is worth installing
 make demo      # kills an unmodified redis and brings its state back
 make verify    # redis, memcached, nginx, node, each with a control
+make test      # includes the multi-replica fabric tests
 ```
 
 `make verify` records each server, kills it, waits out a real-time gap, replays, and
@@ -150,22 +195,37 @@ nginx     live/replay Date 15:14:41 GMT == 15:14:41 GMT       | control Date 15:
 node      live/replay {"now":1782054887981} == ...887981      | control {"now":1782054893724}  OK
 ```
 
+The replicated engine is in `crates/onebarrier/`. `make test` runs it over a live
+loopback-UDP fabric, including the convergence and replica-crash tests above.
+
 ## Limitations
 
-Durability is in-memory. State goes to f-of-k peers, which survives crashes but not
-power loss. Same tradeoff as FaRM and RAMCloud, and it's what makes the cost disappear.
+**No automated failover.** The recovery mechanism is validated and failure detection is
+inherited from the fabric, but primary promotion is a view change, which needs consensus,
+and it's left to a production layer. A primary failure opens a recovery window of
+unavailability. That window is the price of passive replication's CPU savings.
 
-The 4.59 µs number needs the fabric. The determinism shims run on any Linux box; the
-operating-point result doesn't.
+**No switch or RDMA testbed.** The ride-versus-stack structure is measured on the real
+engine; its magnitude at the microsecond operating point rests on a calibrated model and
+published 1Pipe numbers. It's the one major claim not measured on real artifacts.
 
-Your program has to fit: deterministic given input order, share-nothing or shardable,
-socket-based, bounded output. The fit test is in [docs/your-app.md](docs/your-app.md).
+**Durability is in-memory.** Replication tolerating `f < k` fail-stop crashes, not
+persistence across correlated power loss. Same tradeoff as FaRM and RAMCloud, and it's
+what puts the replica write inside the barrier instead of after it.
 
-Some apps need flags. memcached needs four to turn off its timer-driven maintenance
-threads, Node needs ASLR off, HAProxy needs an explicit date header. They're documented,
-not hidden.
+**Share-nothing only.** Order-log-free replay covers share-nothing servers. Arbitrary
+shared-memory multithreading falls back to the checkpoint-only CRIU path, which is how
+PostgreSQL and MariaDB are covered. The fit test is in [docs/your-app.md](docs/your-app.md).
 
-RDRAND can't be virtualized from userspace, only disabled.
+**Residual nondeterminism.** Two CPU instructions take no syscall and export no symbol:
+`RDRAND`, pinned per-consumer here, and `RDTSC`, unused for externally visible state by
+the fifteen applications. A fully general guarantee would trap both.
+
+**The boundary of transparency** is an impossibility, not an engineering gap. No
+transparent system can un-send an effect already delivered to an external party that
+won't cooperate in deduplication; that's the two-generals obstacle. Output commit bounds
+the inconsistency window, it can't close it. The clean wins are fabric-internal services,
+idempotent interfaces, and self-contained leaf services.
 
 This is a research prototype. It works, but it isn't a production service.
 
@@ -173,10 +233,10 @@ This is a research prototype. It works, but it isn't a production service.
 
 | path | contents |
 |---|---|
-| `bin/onebarrier` | the CLI |
+| `crates/onebarrier/` | the replicated engine: protocol, durable log, snapshots, recovery, benchmarks, checkers |
 | `interpose/` | the determinism shims and the per-app harnesses |
-| `crates/onebarrier/` | Rust engine, protocols, recovery, benchmarks, checkers |
-| `spec/` | TLA+ specs |
+| `bin/onebarrier` | the CLI |
+| `spec/` | TLA+ specs for the engine and the fabric's total order |
 | `docs/` | guides; `docs/research/` has the full experimental record |
 | `paper/` | paper source and figures |
 | `website/` | companion site |

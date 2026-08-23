@@ -1,10 +1,15 @@
 # OneBarrier libOS — transparent interception & deterministic recovery
 
-The user-space libOS layer that brings OneBarrier's fault tolerance to
-**unmodified** applications: it intercepts an app's nondeterminism, records it,
-and replays it deterministically on a fresh instance after a crash — *recovery*,
-not just interception. No kernel changes, no application changes (the
-SocksDirect lineage).
+The user-space layer that closes OneBarrier's fourth condition, Determinism. It
+intercepts an unmodified app's nondeterminism, records it, and replays it
+deterministically on a fresh instance after a crash. No kernel changes, no
+application changes (the SocksDirect lineage).
+
+The other three conditions (Order, Barrier, Durability) come from the network,
+and the engine that consumes them is in `crates/onebarrier/`. This layer is
+separable on purpose: it needs no fabric and no special hardware, so everything
+here runs on a commodity Linux box. See [../docs/how-it-works.md](../docs/how-it-works.md)
+for how the four fit together.
 
 ## What it does
 
