@@ -1,21 +1,21 @@
 ---
 name: Determinism failure
-about: An app does not recover byte-identically
+about: An app doesn't recover byte-identically
 title: '[determinism] '
 labels: determinism
 ---
 
-## The app
+## App
 
-Exact launch command, including every flag:
+Exact launch command, flags included:
 
 ```
 ```
 
 ## What diverged
 
-The probe values from all three runs. The control matters: if it matches live,
-the test could have passed trivially and the failure means something different.
+All three probe values. The control matters: if it matches live, the test could have
+passed trivially and the failure means something different.
 
 ```
 live   :
@@ -23,24 +23,23 @@ replay :
 control:
 ```
 
-Which output field differs — a timestamp, an ID, an eviction set, a counter?
+Which field differs? A timestamp, an ID, an eviction set, a counter?
 
 ## Environment
 
 ```
-# paste the output of:
+# output of:
 onebarrier doctor
 uname -a
 ```
 
-## Already checked
+## Already ruled out
 
-The known residual sources are listed in
-[docs/your-app.md](../../docs/your-app.md#step-4--hunt-the-residual-nondeterminism).
-Which have you ruled out?
+Known leftovers are listed in
+[docs/your-app.md](../../docs/your-app.md#4-chase-the-leftovers).
 
-- [ ] Timer-driven maintenance threads (memcached-style)
-- [ ] `/dev/urandom` via `fopen` (bypasses both symbol interposition and the syscall trap)
+- [ ] timer-driven maintenance threads (the memcached case)
+- [ ] `/dev/urandom` via `fopen`, which misses both the symbol hook and the syscall trap
 - [ ] ASLR / RDRAND (needs `setarch -R` and `OPENSSL_ia32cap`)
-- [ ] Fork-per-request resetting the per-process tick counter
-- [ ] Single-threaded configuration confirmed
+- [ ] fork-per-request resetting the tick counter
+- [ ] single-threaded config confirmed

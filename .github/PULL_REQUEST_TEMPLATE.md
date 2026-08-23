@@ -4,8 +4,8 @@
 
 ## Evidence
 
-This project's one firm rule is that claims are backed by a command. If this PR
-adds or changes a number in any document, paste the command and its output.
+Claims here come with a command. If this PR adds or changes a number in any document,
+paste the command and its output.
 
 ```
 ```
@@ -15,6 +15,6 @@ adds or changes a number in any document, paste the command and its output.
 - [ ] `make test` passes
 - [ ] `bash -n interpose/*.sh` passes
 - [ ] `make verify` passes, if `interpose/` was touched
-- [ ] New numbers are accompanied by their reproducing command
-- [ ] No unrelated reformatting (see CONTRIBUTING.md)
-- [ ] A new harness includes a control run that differs
+- [ ] new numbers come with the command that produced them
+- [ ] no unrelated reformatting (see CONTRIBUTING.md)
+- [ ] a new harness includes a control run that differs

@@ -24,23 +24,22 @@ Unacceptable behaviour:
 - Public or private harassment
 - Publishing others' private information without explicit permission
 
-## A note specific to this project
+## A note for this project
 
-This repository makes empirical claims, and disagreement about them is welcome
-and expected. Argue with a result, a method, or a number as sharply as you like —
-that is how the work improves. Do not make it about the person.
+This repository makes empirical claims and disagreement about them is welcome. Argue
+with a result, a method, or a number as sharply as you like. That's how the work
+improves. Just don't make it about the person.
 
-If you think a claim here is wrong, the most useful thing you can do is show the
-command that contradicts it.
+If you think a claim here is wrong, the most useful thing you can do is show the command
+that contradicts it.
 
 ## Enforcement
 
-Report unacceptable behaviour to `boj@19pine.ai`. Reports will be reviewed and
-investigated promptly and fairly, and the reporter's privacy will be respected.
+Report unacceptable behaviour to `boj@19pine.ai`. Reports get reviewed promptly and the
+reporter's privacy is respected.
 
-Maintainers may remove, edit, or reject comments, commits, code, and other
-contributions not aligned with this Code of Conduct, and will explain moderation
-decisions when appropriate.
+Maintainers may remove, edit, or reject contributions that don't line up with this Code
+of Conduct, and will explain moderation decisions where it makes sense to.
 
 ## Attribution
 

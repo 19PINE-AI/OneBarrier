@@ -2,10 +2,10 @@ blank_issues_enabled: true
 contact_links:
   - name: Question about the paper
     url: https://arxiv.org/abs/2608.14601
-    about: The paper covers the formal argument, assumptions, and related work.
+    about: The paper has the formal argument, assumptions, and related work.
   - name: How it works
     url: https://github.com/19PINE-AI/OneBarrier/blob/main/docs/how-it-works.md
-    about: The mechanism explained without jargon.
+    about: The mechanism without the jargon.
   - name: Security issue
     url: https://github.com/19PINE-AI/OneBarrier/security/advisories/new
-    about: Please report security problems privately, not as a public issue.
+    about: Report security problems privately, not as a public issue.

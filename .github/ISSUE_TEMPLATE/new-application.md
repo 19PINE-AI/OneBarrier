@@ -5,23 +5,23 @@ title: '[app] '
 labels: enhancement, application
 ---
 
-Thank you — this is the most useful contribution to this project.
+Thanks, this is the most useful thing to add to this project.
 
-## The application
+## App
 
-Name, version, and launch command:
+Name, version, launch command:
 
 ```
 ```
 
-## The probe
+## Probe
 
-What time- or randomness-dependent output proves recovery worked? (Redis uses
-`TIME`, nginx the `Date:` header, SQLite a `strftime('now')` column.)
+What time- or randomness-dependent output proves recovery worked? redis uses `TIME`,
+nginx the `Date:` header, SQLite a `strftime('now')` column.
 
-## The verdict
+## Verdict
 
-Both halves are required — `replay == live` **and** `control != live`:
+Both halves, `replay == live` and `control != live`:
 
 ```
 live   :
@@ -31,10 +31,10 @@ control:
 
 ## What it needed
 
-Any flags, configuration, or workarounds — a single-thread flag, disabled
-maintenance threads, an explicit date header. These belong in the docs.
+Any flags, config, or workarounds: a single-thread flag, disabled maintenance threads,
+an explicit date header. These belong in the docs.
 
 ## Harness
 
-Have you written an `interpose/ob-<app>.sh`? A PR is very welcome — see
+Did you write an `interpose/ob-<app>.sh`? A PR is very welcome, see
 [CONTRIBUTING.md](../../CONTRIBUTING.md).
