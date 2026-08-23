@@ -13,6 +13,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
 import pathlib
+import io
+import re
 
 OUT = pathlib.Path(__file__).parent
 
@@ -93,10 +95,19 @@ def canvas(w, h, t):
 
 
 def save(fig, name, theme):
-    p = OUT / f"{name}-{theme}.svg"
-    # metadata Date=None drops the generation timestamp, the other source of churn
-    fig.savefig(p, format="svg", metadata={"Date": None})
+    """Write one SVG, byte-reproducibly.
+
+    Matplotlib stamps a <metadata> block containing a timestamp and its own
+    version number, so the same figure regenerated on another machine differs
+    from the committed copy and CI's staleness check fails on every push. The
+    drawing itself is stable, so strip the block rather than pinning versions.
+    """
+    buf = io.StringIO()
+    fig.savefig(buf, format="svg", metadata={"Date": None})
     plt.close(fig)
+    svg = re.sub(r"[ \t]*<metadata>.*?</metadata>\n?", "", buf.getvalue(), flags=re.S)
+    p = OUT / f"{name}-{theme}.svg"
+    p.write_text(svg)
     print("wrote", p.name)
 
 
